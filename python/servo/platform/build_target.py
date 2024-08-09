@@ -36,6 +36,8 @@ class BuildTarget(object):
                 return AndroidTarget(target_triple)
             elif 'ohos' in target_triple:
                 return OpenHarmonyTarget(target_triple)
+            elif 'aarch64-unknown-linux-gnu' in target_triple:
+                return CrossBuildTarget(target_triple)
             elif target_triple != host_triple:
                 raise Exception(f"Unknown build target {target_triple}")
         return BuildTarget(host_triple)

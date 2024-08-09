@@ -28,6 +28,10 @@ linker = "lld-link.exe"
 [target.aarch64-uwp-windows-msvc]
 linker = "lld-link.exe"
 
+[target.aarch64-unknown-linux-gnu]
+linker = "./support/arm64/fake-clang-ld.sh"
+ar = "llvm-ar"
+
 [env]
 MACOSX_DEPLOYMENT_TARGET = "13.0"
 RUSTC_BOOTSTRAP = "crown,script,script_bindings,style_tests,mozjs,mozjs_sys"

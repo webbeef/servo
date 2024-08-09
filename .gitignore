@@ -74,3 +74,6 @@ support/macos/Brewfile.lock.json
 
 # Justfiles
 justfile
+
+# arm64 sysroot
+support/arm64/servo-arm64-sysroot

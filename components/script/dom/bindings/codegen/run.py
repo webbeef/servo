@@ -15,9 +15,8 @@ def main():
     sys.path.insert(0, os.path.join(SERVO_ROOT, "third_party", "WebIDL"))
     sys.path.insert(0, os.path.join(SERVO_ROOT, "third_party", "ply"))
 
-    css_properties_json, out_dir = sys.argv[1:]
+    css_properties_json, webidls_dir, out_dir = sys.argv[1:]
     doc_servo = os.path.join(SERVO_ROOT, "target", "doc", "servo")
-    webidls_dir = os.path.join(SCRIPT_PATH, "..", "..", "webidls")
     config_file = "Bindings.conf"
 
     import WebIDL

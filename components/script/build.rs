@@ -17,10 +17,12 @@ fn main() {
 
     let style_out_dir = PathBuf::from(env::var_os("DEP_SERVO_STYLE_CRATE_OUT_DIR").unwrap());
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").unwrap());
+    let cwd = env::current_dir().unwrap();
 
     let status = Command::new(find_python())
         .arg("dom/bindings/codegen/run.py")
         .arg(style_out_dir.join("css-properties.json"))
+        .arg(cwd.join("dom").join("webidls"))
         .arg(&out_dir)
         .status()
         .unwrap();

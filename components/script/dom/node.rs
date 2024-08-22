@@ -110,6 +110,7 @@ use crate::dom::html::htmltextareaelement::{
     HTMLTextAreaElement, LayoutHTMLTextAreaElementHelpers,
 };
 use crate::dom::html::htmlvideoelement::{HTMLVideoElement, LayoutHTMLVideoElementHelpers};
+use crate::dom::html::htmlwebviewelement::{HTMLWebViewElement, HTMLWebViewElementLayoutMethods};
 use crate::dom::mutationobserver::{Mutation, MutationObserver, RegisteredObserver};
 use crate::dom::nodelist::NodeList;
 use crate::dom::pointerevent::{PointerEvent, PointerId};
@@ -1688,6 +1689,8 @@ pub(crate) trait LayoutNodeHelpers<'dom> {
     fn svg_data(self) -> Option<SVGElementData>;
     fn iframe_browsing_context_id(self) -> Option<BrowsingContextId>;
     fn iframe_pipeline_id(self) -> Option<PipelineId>;
+    fn webview_browsing_context_id(self) -> Option<BrowsingContextId>;
+    fn webview_pipeline_id(self) -> Option<PipelineId>;
     fn opaque(self) -> OpaqueNode;
     fn implemented_pseudo_element(&self) -> Option<PseudoElement>;
     fn is_in_ua_widget(&self) -> bool;
@@ -1986,6 +1989,16 @@ impl<'dom> LayoutNodeHelpers<'dom> for LayoutDom<'dom, Node> {
     fn iframe_pipeline_id(self) -> Option<PipelineId> {
         self.downcast::<HTMLIFrameElement>()
             .and_then(|iframe_element| iframe_element.pipeline_id())
+    }
+
+    fn webview_browsing_context_id(self) -> Option<BrowsingContextId> {
+        self.downcast::<HTMLWebViewElement>()
+            .and_then(|webview_element| webview_element.browsing_context_id())
+    }
+
+    fn webview_pipeline_id(self) -> Option<PipelineId> {
+        self.downcast::<HTMLWebViewElement>()
+            .and_then(|webview_element| webview_element.pipeline_id())
     }
 
     #[allow(unsafe_code)]
@@ -4473,6 +4486,9 @@ impl From<ElementTypeIdWrapper> for LayoutElementType {
             },
             ElementTypeId::HTMLElement(HTMLElementTypeId::HTMLTextAreaElement) => {
                 LayoutElementType::HTMLTextAreaElement
+            },
+            ElementTypeId::HTMLElement(HTMLElementTypeId::HTMLWebViewElement) => {
+                LayoutElementType::HTMLWebViewElement
             },
             ElementTypeId::SVGElement(SVGElementTypeId::SVGGraphicsElement(
                 SVGGraphicsElementTypeId::SVGImageElement,

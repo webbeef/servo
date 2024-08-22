@@ -437,6 +437,18 @@ impl<'dom> ThreadSafeLayoutNode<'dom> for ServoThreadSafeLayoutNode<'dom> {
         this.iframe_pipeline_id()
     }
 
+    // Can return None if this is not a webview
+    fn webview_browsing_context_id(&self) -> Option<BrowsingContextId> {
+        let this = unsafe { self.get_jsmanaged() };
+        this.webview_browsing_context_id()
+    }
+
+    // Can return None if this is not a webview
+    fn webview_pipeline_id(&self) -> Option<PipelineId> {
+        let this = unsafe { self.get_jsmanaged() };
+        this.webview_pipeline_id()
+    }
+
     fn get_span(&self) -> Option<u32> {
         unsafe {
             self.get_jsmanaged()

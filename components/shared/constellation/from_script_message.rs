@@ -695,6 +695,10 @@ pub enum ScriptToConstellationMessage {
     ForwardKeyboardScroll(PipelineId, KeyboardScroll),
     /// Notify the Constellation of the screenshot readiness of a given pipeline.
     RespondToScreenshotReadinessRequest(ScreenshotReadinessResponse),
+    /// Create a new top level browsing context.
+    NewWebView(ServoUrl, WebViewId),
+    /// Close a top level browsing context.
+    CloseWebView(WebViewId),
 }
 
 impl fmt::Debug for ScriptToConstellationMessage {

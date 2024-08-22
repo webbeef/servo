@@ -228,10 +228,20 @@ impl Pipeline {
     pub fn spawn<STF: ScriptThreadFactory>(
         state: InitialPipelineState,
     ) -> Result<NewPipeline, Error> {
+        println!(
+            "ZZZ Pipeline::spawn event_loop={}",
+            state.event_loop.is_some()
+        );
         // Note: we allow channel creation to panic, since recovering from this
         // probably requires a general low-memory strategy.
         let (script_chan, (bhm_control_chan, lifeline, join_handle)) = match state.event_loop {
             Some(script_chan) => {
+                // if state.parent_pipeline_id.is_none() {
+                //     let stack = std::backtrace::Backtrace::capture();
+                //     println!("================================================");
+                //     println!("{stack}");
+                //     println!("================================================");
+                // }
                 let new_layout_info = NewLayoutInfo {
                     parent_info: state.parent_pipeline_id,
                     new_pipeline_id: state.id,

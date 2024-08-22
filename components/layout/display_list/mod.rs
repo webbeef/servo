@@ -634,6 +634,7 @@ impl Fragment {
                 let iframe = iframe.borrow();
                 match iframe.style.get_inherited_box().visibility {
                     Visibility::Visible => {
+                        log::error!("Visible Fragment::IFrame pipeline={:?}", iframe.pipeline_id);
                         builder.mark_is_contentful();
                         let rect = iframe.rect.translate(containing_block.origin.to_vector());
 

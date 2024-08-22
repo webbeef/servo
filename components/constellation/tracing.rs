@@ -183,6 +183,8 @@ mod from_script {
                 Self::RespondToScreenshotReadinessRequest(..) => {
                     target!("RespondToScreenshotReadinessRequest")
                 },
+                Self::NewWebView(..) => target!("NewWebView"),
+                Self::CloseWebView(..) => target!("CloseWebView"),
             }
         }
     }

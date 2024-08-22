@@ -897,6 +897,7 @@ fn rendered_text_collection_steps(
                     LayoutNodeType::Element(LayoutElementType::HTMLObjectElement) |
                     LayoutNodeType::Element(LayoutElementType::HTMLInputElement) |
                     LayoutNodeType::Element(LayoutElementType::HTMLTextAreaElement) |
+                    LayoutNodeType::Element(LayoutElementType::HTMLWebViewElement) |
                     LayoutNodeType::Element(LayoutElementType::HTMLMediaElement) => {
                         return items;
                     },
@@ -1173,6 +1174,7 @@ fn rendered_text_collection_steps(
                 LayoutNodeType::Element(LayoutElementType::HTMLObjectElement) |
                 LayoutNodeType::Element(LayoutElementType::HTMLInputElement) |
                 LayoutNodeType::Element(LayoutElementType::HTMLTextAreaElement) |
+                LayoutNodeType::Element(LayoutElementType::HTMLWebViewElement) |
                 LayoutNodeType::Element(LayoutElementType::HTMLMediaElement) => {
                     if display != Display::Block && state.did_truncate_trailing_white_space {
                         items.push(InnerOrOuterTextItem::Text(String::from(" ")));

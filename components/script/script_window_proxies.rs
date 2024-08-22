@@ -127,6 +127,16 @@ impl ScriptWindowProxies {
                 .borrow()
                 .find_iframe(parent_id, browsing_context_id)
         });
+        let webview = parent_info.and_then(|parent_id| {
+            documents
+                .borrow()
+                .find_webview(parent_id, browsing_context_id)
+        });
+        error!(
+            "FFF local_window_proxy: parent_info={:?} webview={}",
+            parent_info,
+            webview.is_some()
+        );
         let parent_browsing_context = match (parent_info, iframe.as_ref()) {
             (_, Some(iframe)) => Some(iframe.owner_window().window_proxy()),
             (Some(parent_id), _) => {

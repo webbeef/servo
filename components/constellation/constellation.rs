@@ -901,6 +901,12 @@ where
         is_private: bool,
         throttled: bool,
     ) {
+        println!(
+            "==================== constellation new_pipeline\nbrowsing_context_id={:?}\nwebview_id={:?}\npipeline_id={:?}\nparent_pipeline={:?}",
+            browsing_context_id, webview_id, pipeline_id, parent_pipeline_id,
+        );
+        println!("========= load_data = {:#?}", load_data);
+
         if self.shutting_down {
             return;
         }
@@ -958,6 +964,19 @@ where
         } else {
             (None, None)
         };
+
+        println!(
+            "ZZZ ================ event_loop={} host={} parent_pipeline_id={:?}",
+            event_loop.is_some(),
+            host.is_some(),
+            parent_pipeline_id,
+        );
+        // if parent_pipeline_id.is_none() {
+        //     let stack = std::backtrace::Backtrace::capture();
+        //     println!("================================================");
+        //     println!("{stack}");
+        //     println!("================================================");
+        // }
 
         let resource_threads = if is_private {
             self.private_resource_threads.clone()
@@ -1139,7 +1158,11 @@ where
         inherited_secure_context: Option<bool>,
         throttled: bool,
     ) {
-        debug!("{}: Creating new browsing context", browsing_context_id);
+        // debug!("{}: Creating new browsing context", browsing_context_id);
+        println!(
+            "XXXXXXXXXXXXXXXXXXXXXX {}: Creating new browsing context parent_pipeline={:?}",
+            browsing_context_id, parent_pipeline_id
+        );
         let bc_group_id = match self
             .browsing_context_group_set
             .iter_mut()
@@ -1722,9 +1745,11 @@ where
                 self.handle_close_top_level_browsing_context(webview_id);
             },
             ScriptToConstellationMessage::ScriptLoadedURLInIFrame(load_info) => {
+                println!("FromScriptMsg::ScriptLoadedURLInIFrame {:?}", load_info);
                 self.handle_script_loaded_url_in_iframe_msg(load_info);
             },
             ScriptToConstellationMessage::ScriptNewIFrame(load_info) => {
+                println!("FromScriptMsg::ScriptNewIFrame {:?}", load_info);
                 self.handle_script_new_iframe(load_info);
             },
             ScriptToConstellationMessage::CreateAuxiliaryWebView(load_info) => {
@@ -1963,6 +1988,17 @@ where
             },
             ScriptToConstellationMessage::RespondToScreenshotReadinessRequest(response) => {
                 self.handle_screenshot_readiness_response(source_pipeline_id, response);
+            },
+            ScriptToConstellationMessage::NewWebView(url, webview_id) => {
+                unimplemented!();
+                // self.handle_new_top_level_browsing_context(
+                //     url,
+                //     webview_id,
+                //     None,
+                // );
+            },
+            ScriptToConstellationMessage::CloseWebView(webview_id) => {
+                self.handle_close_top_level_browsing_context(webview_id);
             },
         }
     }
@@ -3013,6 +3049,7 @@ where
         webview_id: WebViewId,
         viewport_details: ViewportDetails,
     ) {
+        println!("ZZZ handle_new_top_level_browsing_context");
         let pipeline_id = PipelineId::new();
         let browsing_context_id = BrowsingContextId::from(webview_id);
         let load_data = LoadData::new(
@@ -3403,7 +3440,7 @@ where
             new_pipeline_id,
             new_browsing_context_id,
             new_webview_id,
-            Some(opener_browsing_context_id),
+            None, //Some(opener_browsing_context_id),
             script_sender,
             self.compositor_proxy.clone(),
             is_opener_throttled,

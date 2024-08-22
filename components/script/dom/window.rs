@@ -2747,8 +2747,20 @@ impl Window {
         self.layout_reflow(QueryMsg::InnerWindowDimensionsQuery);
         self.Document()
             .iframes()
-            .get(browsing_context_id)
+            .get_iframe(browsing_context_id)
             .and_then(|iframe| iframe.size)
+    }
+
+    pub(crate) fn get_webview_viewport_details_if_known(
+        &self,
+        browsing_context_id: BrowsingContextId,
+    ) -> Option<ViewportDetails> {
+        // Reflow might fail, but do a best effort to return the right size.
+        self.layout_reflow(QueryMsg::InnerWindowDimensionsQuery);
+        self.Document()
+            .iframes()
+            .get_webview(browsing_context_id)
+            .and_then(|webview| webview.size)
     }
 
     #[allow(unsafe_code)]

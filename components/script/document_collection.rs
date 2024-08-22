@@ -13,6 +13,7 @@ use crate::dom::bindings::trace::HashMapTracedValues;
 use crate::dom::document::Document;
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::html::htmliframeelement::HTMLIFrameElement;
+use crate::dom::html::htmlwebviewelement::HTMLWebViewElement;
 use crate::dom::window::Window;
 
 /// The collection of all [`Document`]s managed by the [`crate::script_thread::ScriptThread`].
@@ -59,7 +60,25 @@ impl DocumentCollection {
         self.find_document(pipeline_id).and_then(|document| {
             document
                 .iframes()
-                .get(browsing_context_id)
+                .get_iframe(browsing_context_id)
+                .map(|iframe| iframe.element.as_rooted())
+        })
+    }
+
+    pub fn find_webview(
+        &self,
+        pipeline_id: PipelineId,
+        browsing_context_id: BrowsingContextId,
+    ) -> Option<DomRoot<HTMLWebViewElement>> {
+        println!(
+            "find_webview pipeline_id={} bc_id={}",
+            pipeline_id, browsing_context_id
+        );
+        self.find_document(pipeline_id).and_then(|document| {
+            println!("   found doc for pipeline_id={}", pipeline_id);
+            document
+                .iframes()
+                .get_webview(browsing_context_id)
                 .map(|iframe| iframe.element.as_rooted())
         })
     }

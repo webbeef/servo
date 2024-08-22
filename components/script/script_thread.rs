@@ -127,6 +127,7 @@ use crate::dom::document::{
 use crate::dom::element::Element;
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::html::htmliframeelement::HTMLIFrameElement;
+use crate::dom::html::htmlwebviewelement::HTMLWebViewElement;
 use crate::dom::node::NodeTraits;
 use crate::dom::servoparser::{ParserContext, ServoParser};
 use crate::dom::types::DebuggerGlobalScope;
@@ -426,6 +427,12 @@ impl ScriptThreadFactory for ScriptThread {
         system_font_service: Arc<SystemFontServiceProxy>,
         load_data: LoadData,
     ) -> JoinHandle<()> {
+        println!("ScriptThread::create url={}", load_data.url.as_str());
+        // if state.parent_info.is_none() {
+        //     use std::backtrace::Backtrace;
+        //     let backtrace = Backtrace::capture();
+        //     println!("{:?}", backtrace);
+        // }
         thread::Builder::new()
             .name(format!("Script{:?}", state.id))
             .spawn(move || {
@@ -2553,6 +2560,8 @@ impl ScriptThread {
     }
 
     fn handle_new_layout(&self, new_layout_info: NewLayoutInfo, origin: MutableOrigin) {
+        println!("handle_new_layout info={:?}", new_layout_info);
+
         let NewLayoutInfo {
             parent_info,
             new_pipeline_id,
@@ -2563,6 +2572,14 @@ impl ScriptThread {
             viewport_details,
             theme,
         } = new_layout_info;
+
+        println!("handle_new_layout parent_info={parent_info:?}");
+        if parent_info.is_none() {
+            let stack = std::backtrace::Backtrace::capture();
+            println!("================================================");
+            println!("{stack}");
+            println!("================================================");
+        }
 
         // Kick off the fetch for the new resource.
         let new_load = InProgressLoad::new(
@@ -2612,6 +2629,14 @@ impl ScriptThread {
             .find_iframe(parent_pipeline_id, browsing_context_id);
         if let Some(iframe) = iframe {
             iframe.set_throttled(throttled);
+        } else {
+            let webview = self
+                .documents
+                .borrow()
+                .find_webview(parent_pipeline_id, browsing_context_id);
+            if let Some(webview) = webview {
+                webview.set_throttled(throttled);
+            }
         }
     }
 
@@ -2697,7 +2722,7 @@ impl ScriptThread {
             // borrow.
             let iframes = document.iframes();
             iframes
-                .get(browsing_context_id)
+                .get_iframe(browsing_context_id)
                 .map(|iframe| DomRoot::from_ref(iframe.element.upcast()))
         }) else {
             return;
@@ -2714,6 +2739,13 @@ impl ScriptThread {
         }
 
         document.request_focus(Some(&iframe_element_root), FocusInitiator::Remote, can_gc);
+        // TODO: webviews
+        // let iframes = document.iframes();
+        // if let Some(iframe) = iframes.get_iframe(browsing_context_id) {
+        //     document.request_focus(Some(iframe.element.upcast()), FocusType::Parent, can_gc);
+        // } else if let Some(webview) = iframes.get_webview(browsing_context_id) {
+        //     document.request_focus(Some(webview.element.upcast()), FocusType::Parent, can_gc);
+        // }
     }
 
     fn handle_focus_document_msg(
@@ -2842,6 +2874,14 @@ impl ScriptThread {
             .find_iframe(parent_pipeline_id, browsing_context_id);
         if let Some(frame_element) = frame_element {
             frame_element.update_pipeline_id(new_pipeline_id, reason, can_gc);
+        } else {
+            let webview_element = self
+                .documents
+                .borrow()
+                .find_webview(parent_pipeline_id, browsing_context_id);
+            if let Some(webview_element) = webview_element {
+                webview_element.update_pipeline_id(new_pipeline_id, reason, can_gc);
+            }
         }
 
         if let Some(window) = self.documents.borrow().find_window(new_pipeline_id) {
@@ -3141,13 +3181,17 @@ impl ScriptThread {
         child_id: PipelineId,
         can_gc: CanGc,
     ) {
+        // TODO(webview) ???
         let iframe = self
             .documents
             .borrow()
             .find_iframe(parent_id, browsing_context_id);
         match iframe {
             Some(iframe) => iframe.iframe_load_event_steps(child_id, can_gc),
-            None => warn!("Message sent to closed pipeline {}.", parent_id),
+            None => warn!(
+                "Message sent to closed pipeline {} (handle_iframe_load_event).",
+                parent_id
+            ),
         }
     }
 
@@ -3189,10 +3233,15 @@ impl ScriptThread {
         let _ = script_to_constellation_chan
             .send(ScriptToConstellationMessage::SetFinalUrl(final_url.clone()));
 
-        debug!(
+        error!(
             "ScriptThread: loading {} on pipeline {:?}",
             incomplete.load_data.url, incomplete.pipeline_id
         );
+
+        if incomplete.parent_info.is_none() {
+            let stack = std::backtrace::Backtrace::capture();
+            println!("{}", stack);
+        }
 
         let origin = if final_url.as_str() == "about:blank" || final_url.as_str() == "about:srcdoc"
         {
@@ -3380,10 +3429,13 @@ impl ScriptThread {
 
         // For any similar-origin iframe, ensure that the contentWindow/contentDocument
         // APIs resolve to the new window/document as soon as parsing starts.
-        if let Some(frame) = window_proxy
-            .frame_element()
-            .and_then(|e| e.downcast::<HTMLIFrameElement>())
-        {
+        let maybe_frame = window_proxy.frame_element();
+        error!(
+            "FFF Checking frame or webview to update pipeline id to {:?} frame={}",
+            incomplete.pipeline_id,
+            maybe_frame.is_some()
+        );
+        if let Some(frame) = maybe_frame.and_then(|e| e.downcast::<HTMLIFrameElement>()) {
             let parent_pipeline = frame.global().pipeline_id();
             self.handle_update_pipeline_id(
                 parent_pipeline,
@@ -3393,6 +3445,22 @@ impl ScriptThread {
                 UpdatePipelineIdReason::Navigation,
                 can_gc,
             );
+        } else {
+            error!("No frame to update");
+        }
+
+        if let Some(frame) = maybe_frame.and_then(|e| e.downcast::<HTMLWebViewElement>()) {
+            let parent_pipeline = frame.global().pipeline_id();
+            self.handle_update_pipeline_id(
+                parent_pipeline,
+                window_proxy.browsing_context_id(),
+                window_proxy.webview_id(),
+                incomplete.pipeline_id,
+                UpdatePipelineIdReason::Navigation,
+                can_gc,
+            );
+        } else {
+            error!("FFF No webview to update");
         }
 
         self.senders
@@ -3512,6 +3580,18 @@ impl ScriptThread {
             .find_iframe(parent_pipeline_id, browsing_context_id);
         if let Some(iframe) = iframe {
             iframe.navigate_or_reload_child_browsing_context(load_data, history_handling, can_gc);
+        } else {
+            let webview = self
+                .documents
+                .borrow()
+                .find_webview(parent_pipeline_id, browsing_context_id);
+            if let Some(webview) = webview {
+                webview.navigate_or_reload_child_browsing_context(
+                    load_data,
+                    history_handling,
+                    can_gc,
+                );
+            }
         }
     }
 
@@ -3630,6 +3710,7 @@ impl ScriptThread {
             },
         };
 
+        println!("ZZZ borrow_mut 2 {:?}", id);
         let mut incomplete_parser_contexts = self.incomplete_parser_contexts.0.borrow_mut();
         let parser = incomplete_parser_contexts
             .iter_mut()
@@ -3640,6 +3721,7 @@ impl ScriptThread {
     }
 
     fn handle_fetch_chunk(&self, pipeline_id: PipelineId, request_id: RequestId, chunk: Vec<u8>) {
+        println!("ZZZ borrow_mut 3 {:?}", pipeline_id);
         let mut incomplete_parser_contexts = self.incomplete_parser_contexts.0.borrow_mut();
         let parser = incomplete_parser_contexts
             .iter_mut()
@@ -3663,6 +3745,7 @@ impl ScriptThread {
             .position(|&(pipeline_id, _)| pipeline_id == id);
 
         if let Some(idx) = idx {
+            println!("ZZZ borrow_mut 4 {:?}", id);
             let (_, mut ctxt) = self.incomplete_parser_contexts.0.borrow_mut().remove(idx);
             ctxt.process_response_eof(request_id, eof);
         }

@@ -316,6 +316,7 @@ pub(crate) trait NodeExt<'dom> {
     fn as_iframe(&self) -> Option<(PipelineId, BrowsingContextId)>;
     fn as_video(&self) -> Option<(Option<webrender_api::ImageKey>, Option<PhysicalSize<f64>>)>;
     fn as_svg(&self) -> Option<SVGElementData>;
+    fn as_webview(&self) -> Option<(PipelineId, BrowsingContextId)>;
     fn as_typeless_object_with_data_attribute(&self) -> Option<String>;
 
     fn ensure_inner_layout_data(&self) -> AtomicRefMut<'dom, InnerDOMLayoutData>;
@@ -384,6 +385,26 @@ impl<'dom> NodeExt<'dom> for ServoThreadSafeLayoutNode<'dom> {
     fn as_iframe(&self) -> Option<(PipelineId, BrowsingContextId)> {
         match (self.iframe_pipeline_id(), self.iframe_browsing_context_id()) {
             (Some(pipeline_id), Some(browsing_context_id)) => {
+                Some((pipeline_id, browsing_context_id))
+            },
+            _ => None,
+        }
+    }
+
+    fn as_webview(&self) -> Option<(PipelineId, BrowsingContextId)> {
+        match (
+            self.webview_pipeline_id(),
+            self.webview_browsing_context_id(),
+        ) {
+            (Some(pipeline_id), Some(browsing_context_id)) => {
+                use base::id::{Index, PipelineIndex};
+                // TODO: DON'T HARDCODE
+                let index: Index<PipelineIndex> =
+                    Index(std::num::NonZeroU32::new(3).unwrap(), PhantomData);
+                let pipeline_id = PipelineId {
+                    namespace_id: base::id::PipelineNamespaceId(1),
+                    index,
+                };
                 Some((pipeline_id, browsing_context_id))
             },
             _ => None,

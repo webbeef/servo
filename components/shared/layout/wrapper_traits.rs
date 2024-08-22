@@ -229,6 +229,14 @@ pub trait ThreadSafeLayoutNode<'dom>: Clone + Copy + Debug + NodeInfo + PartialE
     /// not an iframe element, fails. Returns None if there is no nested browsing context.
     fn iframe_pipeline_id(&self) -> Option<PipelineId>;
 
+    /// If this node is a webview element, returns its browsing context ID. If this node is
+    /// not an iframe element, fails.
+    fn webview_browsing_context_id(&self) -> Option<BrowsingContextId>;
+
+    /// If this node is a webview element, returns its pipeline ID. If this node is
+    /// not an iframe element, fails.
+    fn webview_pipeline_id(&self) -> Option<PipelineId>;
+
     fn get_span(&self) -> Option<u32>;
     fn get_colspan(&self) -> Option<u32>;
     fn get_rowspan(&self) -> Option<u32>;

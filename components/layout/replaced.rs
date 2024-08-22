@@ -111,7 +111,7 @@ pub(crate) struct CanvasInfo {
 }
 
 #[derive(Debug, MallocSizeOf)]
-pub(crate) struct IFrameInfo {
+pub(crate) struct IFrameOrWebViewInfo {
     pub pipeline_id: PipelineId,
     pub browsing_context_id: BrowsingContextId,
 }
@@ -124,7 +124,8 @@ pub(crate) struct VideoInfo {
 #[derive(Debug, MallocSizeOf)]
 pub(crate) enum ReplacedContentKind {
     Image(Option<Image>),
-    IFrame(IFrameInfo),
+    IFrame(IFrameOrWebViewInfo),
+    WebView(IFrameOrWebViewInfo),
     Canvas(CanvasInfo),
     Video(Option<VideoInfo>),
     SVGElement(Option<VectorImage>),
@@ -158,7 +159,19 @@ impl ReplacedContents {
                 )
             } else if let Some((pipeline_id, browsing_context_id)) = node.as_iframe() {
                 (
-                    ReplacedContentKind::IFrame(IFrameInfo {
+                    ReplacedContentKind::IFrame(IFrameOrWebViewInfo {
+                        pipeline_id,
+                        browsing_context_id,
+                    }),
+                    NaturalSizes::empty(),
+                )
+            } else if let Some((pipeline_id, browsing_context_id)) = node.as_webview() {
+                println!(
+                    "ZZZ Found WebView pipeline={:?} bc={:?}",
+                    pipeline_id, browsing_context_id
+                );
+                (
+                    ReplacedContentKind::WebView(IFrameOrWebViewInfo {
                         pipeline_id,
                         browsing_context_id,
                     }),
@@ -378,7 +391,8 @@ impl ReplacedContents {
                     image_key: video.as_ref().map(|video| video.image_key),
                 }))]
             },
-            ReplacedContentKind::IFrame(iframe) => {
+            ReplacedContentKind::WebView(iframe) | ReplacedContentKind::IFrame(iframe) => {
+                println!("ZZZ Creating a Fragment::IFrame");
                 let size = Size2D::new(rect.size.width.to_f32_px(), rect.size.height.to_f32_px());
                 let hidpi_scale_factor = layout_context.style_context.device_pixel_ratio();
 

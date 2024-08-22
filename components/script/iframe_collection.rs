@@ -10,17 +10,19 @@ use embedder_traits::ViewportDetails;
 use layout_api::IFrameSizes;
 use rustc_hash::FxHashMap;
 
+use crate::DomObject;
 use crate::dom::bindings::inheritance::Castable;
 use crate::dom::bindings::root::{Dom, DomRoot};
 use crate::dom::html::htmliframeelement::HTMLIFrameElement;
+use crate::dom::html::htmlwebviewelement::HTMLWebViewElement;
 use crate::dom::node::{Node, ShadowIncluding};
 use crate::dom::types::{Document, Window};
 use crate::script_thread::with_script_thread;
 
 #[derive(JSTraceable, MallocSizeOf)]
 #[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
-pub(crate) struct IFrame {
-    pub(crate) element: Dom<HTMLIFrameElement>,
+pub(crate) struct IFrameOrWebView<T: DomObject> {
+    pub(crate) element: Dom<T>,
     #[no_trace]
     pub(crate) size: Option<ViewportDetails>,
 }
@@ -29,7 +31,9 @@ pub(crate) struct IFrame {
 #[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
 pub(crate) struct IFrameCollection {
     /// The `<iframe>`s in the collection.
-    iframes: Vec<IFrame>,
+    iframes: Vec<IFrameOrWebView<HTMLIFrameElement>>,
+    /// The `<webview>`s in the collection.
+    webviews: Vec<IFrameOrWebView<HTMLWebViewElement>>,
     /// When true, the collection will need to be rebuilt.
     invalid: bool,
 }
@@ -38,6 +42,7 @@ impl IFrameCollection {
     pub(crate) fn new() -> Self {
         Self {
             iframes: vec![],
+            webviews: vec![],
             invalid: true,
         }
     }
@@ -74,28 +79,77 @@ impl IFrameCollection {
                 let size = element
                     .browsing_context_id()
                     .and_then(|browsing_context_id| old_sizes.remove(&browsing_context_id));
-                IFrame {
+                IFrameOrWebView {
                     element: element.as_traced(),
                     size,
                 }
             })
             .collect();
+
+        // Preserve any old sizes, but only for `<webview>`s that already have a
+        // BrowsingContextId and a set size.
+        let mut old_sizes: FxHashMap<_, _> = self
+            .webviews
+            .iter()
+            .filter_map(
+                |webview| match (webview.element.browsing_context_id(), webview.size) {
+                    (Some(browsing_context_id), Some(size)) => Some((browsing_context_id, size)),
+                    _ => None,
+                },
+            )
+            .collect();
+
+        self.webviews = document_node
+            .traverse_preorder(ShadowIncluding::Yes)
+            .filter_map(DomRoot::downcast::<HTMLWebViewElement>)
+            .map(|element| {
+                let size = element
+                    .browsing_context_id()
+                    .and_then(|browsing_context_id| old_sizes.remove(&browsing_context_id));
+                IFrameOrWebView {
+                    element: element.as_traced(),
+                    size,
+                }
+            })
+            .collect();
+
         self.invalid = false;
     }
 
-    pub(crate) fn get(&self, browsing_context_id: BrowsingContextId) -> Option<&IFrame> {
+    pub(crate) fn get_iframe(
+        &self,
+        browsing_context_id: BrowsingContextId,
+    ) -> Option<&IFrameOrWebView<HTMLIFrameElement>> {
         self.iframes
             .iter()
             .find(|iframe| iframe.element.browsing_context_id() == Some(browsing_context_id))
     }
 
-    pub(crate) fn get_mut(
+    pub(crate) fn get_iframe_mut(
         &mut self,
         browsing_context_id: BrowsingContextId,
-    ) -> Option<&mut IFrame> {
+    ) -> Option<&mut IFrameOrWebView<HTMLIFrameElement>> {
         self.iframes
             .iter_mut()
             .find(|iframe| iframe.element.browsing_context_id() == Some(browsing_context_id))
+    }
+
+    pub(crate) fn get_webview(
+        &self,
+        browsing_context_id: BrowsingContextId,
+    ) -> Option<&IFrameOrWebView<HTMLWebViewElement>> {
+        self.webviews
+            .iter()
+            .find(|webview| webview.element.browsing_context_id() == Some(browsing_context_id))
+    }
+
+    pub(crate) fn get_webview_mut(
+        &mut self,
+        browsing_context_id: BrowsingContextId,
+    ) -> Option<&mut IFrameOrWebView<HTMLWebViewElement>> {
+        self.webviews
+            .iter_mut()
+            .find(|webview| webview.element.browsing_context_id() == Some(browsing_context_id))
     }
 
     /// Set the size of an `<iframe>` in the collection given its `BrowsingContextId` and
@@ -105,10 +159,14 @@ impl IFrameCollection {
         browsing_context_id: BrowsingContextId,
         new_size: ViewportDetails,
     ) -> Option<ViewportDetails> {
-        self.get_mut(browsing_context_id)
-            .expect("Tried to set a size for an unknown <iframe>")
-            .size
-            .replace(new_size)
+        if let Some(iframe) = self.get_iframe_mut(browsing_context_id) {
+            iframe.size.replace(new_size)
+        } else if let Some(webview) = self.get_webview_mut(browsing_context_id) {
+            webview.size.replace(new_size)
+        } else {
+            error!("Tried to set a size for an unknown <iframe> or <webview>");
+            None
+        }
     }
 
     /// Update the recorded iframe sizes of the contents of layout. Return a

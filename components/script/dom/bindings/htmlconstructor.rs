@@ -36,7 +36,7 @@ use crate::dom::bindings::codegen::Bindings::{
     HTMLTableColElementBinding, HTMLTableElementBinding, HTMLTableRowElementBinding,
     HTMLTableSectionElementBinding, HTMLTemplateElementBinding, HTMLTextAreaElementBinding,
     HTMLTimeElementBinding, HTMLTitleElementBinding, HTMLTrackElementBinding,
-    HTMLUListElementBinding, HTMLVideoElementBinding,
+    HTMLUListElementBinding, HTMLVideoElementBinding, HTMLWebViewElementBinding,
 };
 use crate::dom::bindings::codegen::PrototypeList;
 use crate::dom::bindings::conversions::DerivedFrom;
@@ -364,6 +364,7 @@ pub fn get_constructor_object_from_local_name(
         local_name!("var") => get_constructor!(HTMLElementBinding),
         local_name!("video") => get_constructor!(HTMLVideoElementBinding),
         local_name!("wbr") => get_constructor!(HTMLElementBinding),
+        local_name!("webview") => get_constructor!(HTMLWebViewElementBinding),
         local_name!("xmp") => get_constructor!(HTMLPreElementBinding),
         _ => false,
     }

@@ -127,6 +127,7 @@ use crate::dom::event::{Event, EventBubbles, EventCancelable};
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::htmlanchorelement::HTMLAnchorElement;
 use crate::dom::htmliframeelement::HTMLIFrameElement;
+use crate::dom::htmlwebviewelement::HTMLWebViewElement;
 use crate::dom::identityhub::Identities;
 use crate::dom::mutationobserver::MutationObserver;
 use crate::dom::node::{window_from_node, Node, ShadowIncluding};
@@ -465,6 +466,15 @@ impl Documents {
     ) -> Option<DomRoot<HTMLIFrameElement>> {
         self.find_document(pipeline_id)
             .and_then(|doc| doc.find_iframe(browsing_context_id))
+    }
+
+    pub fn find_webview(
+        &self,
+        pipeline_id: PipelineId,
+        browsing_context_id: BrowsingContextId,
+    ) -> Option<DomRoot<HTMLWebViewElement>> {
+        self.find_document(pipeline_id)
+            .and_then(|doc| doc.find_webview(browsing_context_id))
     }
 
     pub fn iter(&self) -> DocumentsIter<'_> {
@@ -2957,6 +2967,14 @@ impl ScriptThread {
             .find_iframe(parent_pipeline_id, browsing_context_id);
         if let Some(iframe) = iframe {
             iframe.set_throttled(throttled);
+        } else {
+            let webview = self
+                .documents
+                .borrow()
+                .find_webview(parent_pipeline_id, browsing_context_id);
+            if let Some(webview) = webview {
+                webview.set_throttled(throttled);
+            }
         }
     }
 
@@ -3020,6 +3038,12 @@ impl ScriptThread {
 
         if let Some(ref frame_element) = frame_element {
             doc.request_focus(Some(frame_element.upcast()), FocusType::Parent);
+        } else {
+            let webview_element = doc.find_webview(browsing_context_id);
+
+            if let Some(ref webview_element) = webview_element {
+                doc.request_focus(Some(webview_element.upcast()), FocusType::Parent);
+            }
         }
     }
 
@@ -3093,6 +3117,14 @@ impl ScriptThread {
             .find_iframe(parent_pipeline_id, browsing_context_id);
         if let Some(frame_element) = frame_element {
             frame_element.update_pipeline_id(new_pipeline_id, reason, can_gc);
+        } else {
+            let webview_element = self
+                .documents
+                .borrow()
+                .find_webview(parent_pipeline_id, browsing_context_id);
+            if let Some(webview_element) = webview_element {
+                webview_element.update_pipeline_id(new_pipeline_id, reason, can_gc);
+            }
         }
 
         if let Some(window) = self.documents.borrow().find_window(new_pipeline_id) {
@@ -3443,13 +3475,17 @@ impl ScriptThread {
         child_id: PipelineId,
         can_gc: CanGc,
     ) {
+        // TODO(webview) ???
         let iframe = self
             .documents
             .borrow()
             .find_iframe(parent_id, browsing_context_id);
         match iframe {
             Some(iframe) => iframe.iframe_load_event_steps(child_id, can_gc),
-            None => warn!("Message sent to closed pipeline {}.", parent_id),
+            None => warn!(
+                "Message sent to closed pipeline {} (handle_iframe_load_event).",
+                parent_id
+            ),
         }
     }
 
@@ -3959,6 +3995,14 @@ impl ScriptThread {
             .find_iframe(parent_pipeline_id, browsing_context_id);
         if let Some(iframe) = iframe {
             iframe.navigate_or_reload_child_browsing_context(load_data, replace, can_gc);
+        } else {
+            let webview = self
+                .documents
+                .borrow()
+                .find_webview(parent_pipeline_id, browsing_context_id);
+            if let Some(webview) = webview {
+                webview.navigate_or_reload_child_browsing_context(load_data, replace, can_gc);
+            }
         }
     }
 

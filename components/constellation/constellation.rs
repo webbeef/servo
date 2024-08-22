@@ -959,6 +959,12 @@ where
         is_private: bool,
         throttled: bool,
     ) {
+        println!("==================== constellation new_pipeline\nbrowsing_context_id={:?}\ntop_level_browsing_context_id={:?}\npipeline_id={:?}\nparent_pipeline={:?}",
+            browsing_context_id,
+            top_level_browsing_context_id,
+            pipeline_id,
+            parent_pipeline_id);
+
         if self.shutting_down {
             return;
         }
@@ -1657,9 +1663,11 @@ where
                 self.handle_navigate_request(source_pipeline_id, req_init, cancel_chan);
             },
             FromScriptMsg::ScriptLoadedURLInIFrame(load_info) => {
+                println!("FromScriptMsg::ScriptLoadedURLInIFrame {:?}", load_info);
                 self.handle_script_loaded_url_in_iframe_msg(load_info);
             },
             FromScriptMsg::ScriptNewIFrame(load_info) => {
+                println!("FromScriptMsg::ScriptNewIFrame {:?}", load_info);
                 self.handle_script_new_iframe(load_info);
             },
             FromScriptMsg::ScriptNewAuxiliary(load_info) => {
@@ -1870,6 +1878,12 @@ where
                 if let Some(pipeline) = self.pipelines.get_mut(&pipeline) {
                     pipeline.title = title;
                 }
+            },
+            FromScriptMsg::NewWebView(url, top_level_browsing_context_id) => {
+                self.handle_new_top_level_browsing_context(url, top_level_browsing_context_id);
+            },
+            FromScriptMsg::CloseWebView(top_level_browsing_context_id) => {
+                self.handle_close_top_level_browsing_context(top_level_browsing_context_id);
             },
         }
     }
@@ -2985,6 +2999,7 @@ where
         url: ServoUrl,
         top_level_browsing_context_id: TopLevelBrowsingContextId,
     ) {
+        println!("ZZZ handle_new_top_level_browsing_context");
         let window_size = self.window_size.initial_viewport;
         let pipeline_id = PipelineId::new();
         let browsing_context_id = BrowsingContextId::from(top_level_browsing_context_id);

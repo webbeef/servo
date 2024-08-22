@@ -111,6 +111,7 @@ pub enum LayoutElementType {
     HTMLTableRowElement,
     HTMLTableSectionElement,
     HTMLTextAreaElement,
+    HTMLWebViewElement,
     SVGSVGElement,
 }
 

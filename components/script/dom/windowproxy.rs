@@ -285,6 +285,7 @@ impl WindowProxy {
         name: DOMString,
         noopener: bool,
     ) -> Option<DomRoot<WindowProxy>> {
+        println!("ZZZ ================= create_auxiliary_browsing_context");
         let (chan, port) = ipc::channel().unwrap();
         let window = self
             .currently_active

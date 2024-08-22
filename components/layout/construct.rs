@@ -407,6 +407,10 @@ where
             Some(LayoutNodeType::Element(LayoutElementType::HTMLIFrameElement)) => {
                 SpecificFragmentInfo::Iframe(IframeFragmentInfo::new(node))
             },
+            // TODO(WebView): check fragment info.
+            Some(LayoutNodeType::Element(LayoutElementType::HTMLWebViewElement)) => {
+                SpecificFragmentInfo::Iframe(IframeFragmentInfo::new(node))
+            },
             Some(LayoutNodeType::Element(LayoutElementType::HTMLImageElement)) => {
                 let image_info = Box::new(ImageFragmentInfo::new(
                     node.image_url(),
@@ -2010,6 +2014,7 @@ where
             Some(LayoutNodeType::Element(LayoutElementType::HTMLMediaElement)) |
             Some(LayoutNodeType::Element(LayoutElementType::HTMLIFrameElement)) |
             Some(LayoutNodeType::Element(LayoutElementType::HTMLCanvasElement)) |
+            Some(LayoutNodeType::Element(LayoutElementType::HTMLWebViewElement)) |
             Some(LayoutNodeType::Element(LayoutElementType::SVGSVGElement)) => true,
             Some(LayoutNodeType::Element(LayoutElementType::HTMLObjectElement)) => {
                 let elem = self.as_element().unwrap();

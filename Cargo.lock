@@ -4168,8 +4168,6 @@ dependencies = [
 [[package]]
 name = "markup5ever"
 version = "0.14.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "82c88c6129bd24319e62a0359cb6b958fa7e8be6e19bb1663bc396b90883aca5"
 dependencies = [
  "log",
  "phf 0.11.2",

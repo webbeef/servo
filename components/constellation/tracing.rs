@@ -188,6 +188,8 @@ mod from_script {
                 Self::RequestAdapter(..) => target!("RequestAdapter"),
                 Self::GetWebGPUChan(..) => target!("GetWebGPUChan"),
                 Self::TitleChanged(..) => target!("TitleChanged"),
+                Self::NewWebView(..) => target!("NewWebView"),
+                Self::CloseWebView(..) => target!("CloseWebView"),
             }
         }
     }

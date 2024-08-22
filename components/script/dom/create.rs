@@ -83,6 +83,7 @@ use crate::dom::htmltrackelement::HTMLTrackElement;
 use crate::dom::htmlulistelement::HTMLUListElement;
 use crate::dom::htmlunknownelement::HTMLUnknownElement;
 use crate::dom::htmlvideoelement::HTMLVideoElement;
+use crate::dom::htmlwebviewelement::HTMLWebViewElement;
 use crate::dom::svgelement::SVGElement;
 use crate::dom::svgsvgelement::SVGSVGElement;
 use crate::realms::{enter_realm, InRealm};
@@ -386,6 +387,7 @@ pub fn create_native_html_element(
         local_name!("var") => make!(HTMLElement),
         local_name!("video") => make!(HTMLVideoElement),
         local_name!("wbr") => make!(HTMLElement),
+        local_name!("webview") => make!(HTMLWebViewElement),
         local_name!("xmp") => make!(HTMLPreElement),
         _ if is_valid_custom_element_name(&name.local) => make!(HTMLElement),
         _ => make!(HTMLUnknownElement),

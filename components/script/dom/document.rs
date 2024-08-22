@@ -144,6 +144,7 @@ use crate::dom::htmlmetaelement::RefreshRedirectDue;
 use crate::dom::htmlscriptelement::{HTMLScriptElement, ScriptResult};
 use crate::dom::htmltextareaelement::HTMLTextAreaElement;
 use crate::dom::htmltitleelement::HTMLTitleElement;
+use crate::dom::htmlwebviewelement::HTMLWebViewElement;
 use crate::dom::keyboardevent::KeyboardEvent;
 use crate::dom::location::Location;
 use crate::dom::messageevent::MessageEvent;
@@ -2726,6 +2727,22 @@ impl Document {
         browsing_context_id: BrowsingContextId,
     ) -> Option<DomRoot<HTMLIFrameElement>> {
         self.iter_iframes()
+            .find(|node| node.browsing_context_id() == Some(browsing_context_id))
+    }
+
+    /// Iterate over all webviews in the document.
+    pub fn iter_webviews(&self) -> impl Iterator<Item = DomRoot<HTMLWebViewElement>> {
+        self.upcast::<Node>()
+            .traverse_preorder(ShadowIncluding::Yes)
+            .filter_map(DomRoot::downcast::<HTMLWebViewElement>)
+    }
+
+    /// Find a webview element in the document.
+    pub fn find_webview(
+        &self,
+        browsing_context_id: BrowsingContextId,
+    ) -> Option<DomRoot<HTMLWebViewElement>> {
+        self.iter_webviews()
             .find(|node| node.browsing_context_id() == Some(browsing_context_id))
     }
 

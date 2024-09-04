@@ -45,6 +45,7 @@ pub enum DOMErrorName {
     EncodingError,
     NotReadableError,
     OperationError,
+    NotAllowedError,
 }
 
 impl DOMErrorName {
@@ -75,6 +76,7 @@ impl DOMErrorName {
             "EncodingError" => Some(DOMErrorName::EncodingError),
             "NotReadableError" => Some(DOMErrorName::NotReadableError),
             "OperationError" => Some(DOMErrorName::OperationError),
+            "NotAllowedError" => Some(DOMErrorName::NotAllowedError),
             _ => None,
         }
     }
@@ -124,6 +126,10 @@ impl DOMException {
             DOMErrorName::NotReadableError => "The I/O read operation failed.",
             DOMErrorName::OperationError => {
                 "The operation failed for an operation-specific reason."
+            },
+            DOMErrorName::NotAllowedError => {
+                r#"The request is not allowed by the user agent or the platform in the current context,
+possibly because the user denied permission."#
             },
         };
 

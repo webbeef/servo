@@ -87,6 +87,8 @@ pub enum Error {
     NotReadable,
     /// OperationError DOMException
     Operation,
+    /// NotAllowedError DOMException
+    NotAllowed,
 
     /// TypeError JavaScript Error
     Type(String),
@@ -140,6 +142,7 @@ pub fn throw_dom_exception(cx: SafeJSContext, global: &GlobalScope, result: Erro
         Error::InvalidModification => DOMErrorName::InvalidModificationError,
         Error::NotReadable => DOMErrorName::NotReadableError,
         Error::Operation => DOMErrorName::OperationError,
+        Error::NotAllowed => DOMErrorName::NotAllowedError,
         Error::Type(message) => unsafe {
             assert!(!JS_IsExceptionPending(*cx));
             throw_type_error(*cx, &message);

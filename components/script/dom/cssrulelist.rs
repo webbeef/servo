@@ -8,7 +8,7 @@ use dom_struct::dom_struct;
 use servo_arc::Arc;
 use style::shared_lock::Locked;
 use style::stylesheets::{
-    AllowImportRules, CssRuleType, CssRuleTypes, CssRules, CssRulesHelpers, KeyframesRule,
+    AllowImportRules, CssRule, CssRuleType, CssRuleTypes, CssRules, CssRulesHelpers, KeyframesRule,
     RulesMutateError, StylesheetLoader as StyleStylesheetLoader,
 };
 
@@ -136,6 +136,23 @@ impl CSSRuleList {
         Ok(idx)
     }
 
+    pub fn add_css_rules(&self, rules: &[CssRule]) {
+        if let RulesSource::Rules(ref css_rules) = self.rules {
+            let mut guard = self.parent_stylesheet.shared_lock().write();
+            let parent_stylesheet = &*self.parent_stylesheet;
+            let global = self.global();
+            let window = global.as_window();
+            let mut dom_rules = self.dom_rules.borrow_mut();
+            for rule in rules {
+                css_rules.write_with(&mut guard).0.push(rule.clone());
+                let dom_rule = CSSRule::new_specific(window, parent_stylesheet, rule.clone());
+                dom_rules.push(MutNullableDom::new(Some(&*dom_rule)));
+            }
+        } else {
+            panic!("Called add_css_rule on non-CssRule-backed CSSRuleList");
+        };
+    }
+
     /// In case of a keyframe rule, index must be valid.
     pub fn remove_rule(&self, index: u32) -> ErrorResult {
         let index = index as usize;
@@ -159,6 +176,26 @@ impl CSSRuleList {
                 }
                 dom_rules.remove(index);
                 kf.write_with(&mut guard).keyframes.remove(index);
+                Ok(())
+            },
+        }
+    }
+
+    /// Remove all the rules.
+    pub fn remove_all_rules(&self) -> ErrorResult {
+        let mut guard = self.parent_stylesheet.shared_lock().write();
+        match self.rules {
+            RulesSource::Rules(ref css_rules) => {
+                css_rules.write_with(&mut guard).0.clear();
+                let mut dom_rules = self.dom_rules.borrow_mut();
+                dom_rules.clear();
+                Ok(())
+            },
+            RulesSource::Keyframes(ref kf) => {
+                // https://drafts.csswg.org/css-animations/#dom-csskeyframesrule-deleterule
+                let mut dom_rules = self.dom_rules.borrow_mut();
+                dom_rules.clear();
+                kf.write_with(&mut guard).keyframes.clear();
                 Ok(())
             },
         }

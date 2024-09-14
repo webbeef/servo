@@ -3995,14 +3995,6 @@ impl ScriptThread {
             .find_iframe(parent_pipeline_id, browsing_context_id);
         if let Some(iframe) = iframe {
             iframe.navigate_or_reload_child_browsing_context(load_data, replace, can_gc);
-        } else {
-            let webview = self
-                .documents
-                .borrow()
-                .find_webview(parent_pipeline_id, browsing_context_id);
-            if let Some(webview) = webview {
-                webview.navigate_or_reload_child_browsing_context(load_data, replace, can_gc);
-            }
         }
     }
 

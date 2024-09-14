@@ -959,7 +959,7 @@ where
         is_private: bool,
         throttled: bool,
     ) {
-        println!("==================== constellation new_pipeline\nbrowsing_context_id={:?}\ntop_level_browsing_context_id={:?}\npipeline_id={:?}\nparent_pipeline={:?}",
+        debug!("==================== constellation new_pipeline\nbrowsing_context_id={:?}\ntop_level_browsing_context_id={:?}\npipeline_id={:?}\nparent_pipeline={:?}",
             browsing_context_id,
             top_level_browsing_context_id,
             pipeline_id,
@@ -1663,11 +1663,9 @@ where
                 self.handle_navigate_request(source_pipeline_id, req_init, cancel_chan);
             },
             FromScriptMsg::ScriptLoadedURLInIFrame(load_info) => {
-                println!("FromScriptMsg::ScriptLoadedURLInIFrame {:?}", load_info);
                 self.handle_script_loaded_url_in_iframe_msg(load_info);
             },
             FromScriptMsg::ScriptNewIFrame(load_info) => {
-                println!("FromScriptMsg::ScriptNewIFrame {:?}", load_info);
                 self.handle_script_new_iframe(load_info);
             },
             FromScriptMsg::ScriptNewAuxiliary(load_info) => {
@@ -1879,8 +1877,8 @@ where
                     pipeline.title = title;
                 }
             },
-            FromScriptMsg::NewWebView(url, top_level_browsing_context_id) => {
-                self.handle_new_top_level_browsing_context(url, top_level_browsing_context_id);
+            FromScriptMsg::CreateWebView(url, top_level_browsing_context_id) => {
+                self.handle_webview_creation(url, top_level_browsing_context_id);
             },
             FromScriptMsg::CloseWebView(top_level_browsing_context_id) => {
                 self.handle_close_top_level_browsing_context(top_level_browsing_context_id);
@@ -2999,7 +2997,73 @@ where
         url: ServoUrl,
         top_level_browsing_context_id: TopLevelBrowsingContextId,
     ) {
-        println!("ZZZ handle_new_top_level_browsing_context");
+        let window_size = self.window_size.initial_viewport;
+        let pipeline_id = PipelineId::new();
+        let browsing_context_id = BrowsingContextId::from(top_level_browsing_context_id);
+        let load_data = LoadData::new(
+            LoadOrigin::Constellation,
+            url,
+            None,
+            Referrer::NoReferrer,
+            None,
+            None,
+        );
+        let sandbox = IFrameSandboxState::IFrameUnsandboxed;
+        let is_private = false;
+        let throttled = false;
+
+        // Register this new top-level browsing context id as a webview and set
+        // its focused browsing context to be itself.
+        self.webviews.add(
+            top_level_browsing_context_id,
+            WebView {
+                focused_browsing_context_id: browsing_context_id,
+                session_history: JointSessionHistory::new(),
+            },
+        );
+
+        // https://html.spec.whatwg.org/multipage/#creating-a-new-browsing-context-group
+        let mut new_bc_group: BrowsingContextGroup = Default::default();
+        let new_bc_group_id = self.next_browsing_context_group_id();
+        new_bc_group
+            .top_level_browsing_context_set
+            .insert(top_level_browsing_context_id);
+        self.browsing_context_group_set
+            .insert(new_bc_group_id, new_bc_group);
+
+        self.new_pipeline(
+            pipeline_id,
+            browsing_context_id,
+            top_level_browsing_context_id,
+            None,
+            None,
+            window_size,
+            load_data,
+            sandbox,
+            is_private,
+            throttled,
+        );
+        self.add_pending_change(SessionHistoryChange {
+            top_level_browsing_context_id,
+            browsing_context_id,
+            new_pipeline_id: pipeline_id,
+            replace: None,
+            new_browsing_context_info: Some(NewBrowsingContextInfo {
+                parent_pipeline_id: None,
+                is_private,
+                inherited_secure_context: None,
+                throttled,
+            }),
+            window_size,
+        });
+    }
+
+    #[tracing::instrument(skip(self), fields(servo_profiling = true))]
+    fn handle_webview_creation(
+        &mut self,
+        url: ServoUrl,
+        top_level_browsing_context_id: TopLevelBrowsingContextId,
+    ) {
         let window_size = self.window_size.initial_viewport;
         let pipeline_id = PipelineId::new();
         let browsing_context_id = BrowsingContextId::from(top_level_browsing_context_id);

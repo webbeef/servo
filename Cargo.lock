@@ -4168,6 +4168,7 @@ dependencies = [
 [[package]]
 name = "markup5ever"
 version = "0.14.0"
+source = "git+https://github.com/webbeef/html5ever.git?branch=webview#92434de4601ce47f0e6aa9f7a0f114dadff9793a"
 dependencies = [
  "log",
  "phf 0.11.2",

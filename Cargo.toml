@@ -198,4 +198,4 @@ strip = true
 #
 # [patch."https://github.com/servo/<repository>"]
 # <crate> = { path = "/path/to/local/checkout" }
-markup5ever = { path = "../html5ever/markup5ever" }
+markup5ever = { git = "https://github.com/webbeef/html5ever.git", branch = "webview" }

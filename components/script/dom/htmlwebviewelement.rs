@@ -11,21 +11,19 @@ use js::rust::HandleObject;
 use profile_traits::ipc as ProfiledIpc;
 use script_traits::IFrameSandboxState::IFrameUnsandboxed;
 use script_traits::{
-    HistoryEntryReplacement, IFrameLoadInfo, IFrameLoadInfoWithData, JsEvalResult, LoadData,
+    HistoryEntryReplacement, IFrameLoadInfo, IFrameLoadInfoWithData, LoadData,
     LoadOrigin, NewLayoutInfo, ScriptMsg, UpdatePipelineIdReason, WindowSizeData,
 };
 use servo_url::ServoUrl;
 
-use crate::document_loader::{LoadBlocker, LoadType};
 use crate::dom::attr::Attr;
-use crate::dom::bindings::cell::DomRefCell;
 use crate::dom::bindings::codegen::Bindings::HTMLWebViewElementBinding::HTMLWebViewElementMethods;
 use crate::dom::bindings::codegen::Bindings::WindowBinding::Window_Binding::WindowMethods;
 use crate::dom::bindings::inheritance::Castable;
 use crate::dom::bindings::refcounted::Trusted;
 use crate::dom::bindings::reflector::DomObject;
 use crate::dom::bindings::root::{DomRoot, LayoutDom};
-use crate::dom::bindings::str::{DOMString, USVString};
+use crate::dom::bindings::str::{ USVString};
 use crate::dom::document::Document;
 use crate::dom::element::{AttributeMutation, Element};
 use crate::dom::globalscope::GlobalScope;
@@ -54,16 +52,9 @@ enum ProcessingMode {
 pub struct HTMLWebViewElement {
     htmlelement: HTMLElement,
     #[no_trace]
-    top_level_browsing_context_id: Cell<Option<TopLevelBrowsingContextId>>,
-    #[no_trace]
-    browsing_context_id: Cell<Option<BrowsingContextId>>,
+    browsing_context_id: Cell<Option<TopLevelBrowsingContextId>>,
     #[no_trace]
     pipeline_id: Cell<Option<PipelineId>>,
-    #[no_trace]
-    pending_pipeline_id: Cell<Option<PipelineId>>,
-    #[no_trace]
-    about_blank_pipeline_id: Cell<Option<PipelineId>>,
-    load_blocker: DomRefCell<Option<LoadBlocker>>,
     throttled: Cell<bool>,
 }
 
@@ -71,7 +62,6 @@ impl HTMLWebViewElement {
     /// <https://html.spec.whatwg.org/multipage/#otherwise-steps-for-iframe-or-frame-elements>,
     /// step 1.
     fn get_url(&self) -> ServoUrl {
-        println!("get_url");
         let element = self.upcast::<Element>();
         element
             .get_attribute(&ns!(), &local_name!("src"))
@@ -86,14 +76,12 @@ impl HTMLWebViewElement {
             .unwrap_or_else(|| ServoUrl::parse("about:blank").unwrap())
     }
 
-    pub fn navigate_or_reload_child_browsing_context(
+    pub fn navigate_or_reload(
         &self,
         load_data: LoadData,
         replace: HistoryEntryReplacement,
-        can_gc: CanGc,
     ) {
-        println!("navigate_or_reload_child_browsing_context");
-        self.start_new_pipeline(load_data, PipelineType::Navigation, replace, can_gc);
+        self.start_new_pipeline(load_data, PipelineType::Navigation, replace);
     }
 
     fn start_new_pipeline(
@@ -101,10 +89,7 @@ impl HTMLWebViewElement {
         mut load_data: LoadData,
         pipeline_type: PipelineType,
         replace: HistoryEntryReplacement,
-        can_gc: CanGc,
     ) {
-        println!("start_new_pipeline");
-
         let browsing_context_id = match self.browsing_context_id() {
             None => return warn!("Attempted to start a new pipeline on an unattached iframe."),
             Some(id) => id,
@@ -117,40 +102,9 @@ impl HTMLWebViewElement {
 
         let document = document_from_node(self);
 
-        {
-            let mut load_blocker = self.load_blocker.borrow_mut();
-            // Any oustanding load is finished from the point of view of the blocked
-            // document; the new navigation will continue blocking it.
-            LoadBlocker::terminate(&mut load_blocker, can_gc);
-        }
-
-        if load_data.url.scheme() == "javascript" {
-            let window_proxy = self.GetContentWindow();
-            if let Some(window_proxy) = window_proxy {
-                // Important re security. See https://github.com/servo/servo/issues/23373
-                // TODO: check according to https://w3c.github.io/webappsec-csp/#should-block-navigation-request
-                if ScriptThread::check_load_origin(&load_data.load_origin, &document.url().origin())
-                {
-                    ScriptThread::eval_js_url(&window_proxy.global(), &mut load_data);
-                }
-            }
-        }
-
-        match load_data.js_eval_result {
-            Some(JsEvalResult::NoContent) => (),
-            _ => {
-                let mut load_blocker = self.load_blocker.borrow_mut();
-                *load_blocker = Some(LoadBlocker::new(
-                    &document,
-                    LoadType::PageSource(load_data.url.clone()),
-                ));
-            },
-        };
-
         let window = window_from_node(self);
         let old_pipeline_id = self.pipeline_id();
         let new_pipeline_id = PipelineId::new();
-        self.pending_pipeline_id.set(Some(new_pipeline_id));
 
         let global_scope = window.upcast::<GlobalScope>();
         let load_info = IFrameLoadInfo {
@@ -172,8 +126,6 @@ impl HTMLWebViewElement {
 
         match pipeline_type {
             PipelineType::InitialAboutBlank => {
-                self.about_blank_pipeline_id.set(Some(new_pipeline_id));
-
                 let load_info = IFrameLoadInfoWithData {
                     info: load_info,
                     load_data: load_data.clone(),
@@ -183,7 +135,7 @@ impl HTMLWebViewElement {
                 };
                 global_scope
                     .script_to_constellation_chan()
-                    .send(ScriptMsg::ScriptNewIFrame(load_info))
+                    .send(ScriptMsg::CreateWebView(load_data.url.clone(), top_level_browsing_context_id))
                     .unwrap();
 
                 let new_layout_info = NewLayoutInfo {
@@ -200,39 +152,25 @@ impl HTMLWebViewElement {
                 ScriptThread::process_attach_layout(new_layout_info, document.origin().clone());
             },
             PipelineType::Navigation => {
-                let load_info = IFrameLoadInfoWithData {
-                    info: load_info,
-                    load_data,
-                    old_pipeline_id,
-                    sandbox: IFrameUnsandboxed,
-                    window_size,
-                };
-                global_scope
-                    .script_to_constellation_chan()
-                    .send(ScriptMsg::ScriptLoadedURLInIFrame(load_info))
-                    .unwrap();
+                error!("Unimplemented: PipelineType::Navigation");
+                // let load_info = IFrameLoadInfoWithData {
+                //     info: load_info,
+                //     load_data,
+                //     old_pipeline_id,
+                //     sandbox: IFrameUnsandboxed,
+                //     window_size,
+                // };
+                // global_scope
+                //     .script_to_constellation_chan()
+                //     .send(ScriptMsg::ScriptLoadedURLInIFrame(load_info))
+                //     .unwrap();
             },
         }
     }
 
     /// <https://html.spec.whatwg.org/multipage/#process-the-iframe-attributes>
-    fn process_the_iframe_attributes(&self, mode: ProcessingMode, can_gc: CanGc) {
-        println!("process_the_iframe_attribute");
+    fn process_the_iframe_attributes(&self, mode: ProcessingMode) {
         let window = window_from_node(self);
-
-        // https://html.spec.whatwg.org/multipage/#attr-iframe-name
-        // Note: the spec says to set the name 'when the nested browsing context is created'.
-        // The current implementation sets the name on the window,
-        // when the iframe attributes are first processed.
-        if mode == ProcessingMode::FirstTime {
-            if let Some(window) = self.GetContentWindow() {
-                window.set_name(
-                    self.upcast::<Element>()
-                        .get_name()
-                        .map_or(DOMString::from(""), |n| DOMString::from(&*n)),
-                );
-            }
-        }
 
         if mode == ProcessingMode::FirstTime &&
             !self.upcast::<Element>().has_attribute(&local_name!("src"))
@@ -240,58 +178,22 @@ impl HTMLWebViewElement {
             return;
         }
 
-        // > 2. Otherwise, if `element` has a `src` attribute specified, or
-        // >    `initialInsertion` is false, then run the shared attribute
-        // >    processing steps for `iframe` and `frame` elements given
-        // >    `element`.
         let url = self.get_url();
-
-        let creator_pipeline_id = if url.as_str() == "about:blank" {
-            Some(window.upcast::<GlobalScope>().pipeline_id())
-        } else {
-            None
-        };
 
         let document = document_from_node(self);
         let load_data = LoadData::new(
             LoadOrigin::Script(document.origin().immutable().clone()),
             url,
-            creator_pipeline_id,
+            None,
             window.upcast::<GlobalScope>().get_referrer(),
             document.get_referrer_policy(),
             Some(window.upcast::<GlobalScope>().is_secure_context()),
         );
 
-        let pipeline_id = self.pipeline_id();
-        // If the initial `about:blank` page is the current page, load with replacement enabled,
-        // see https://html.spec.whatwg.org/multipage/#the-iframe-element:about:blank-3
-        let is_about_blank =
-            pipeline_id.is_some() && pipeline_id == self.about_blank_pipeline_id.get();
-        let replace = if is_about_blank {
-            HistoryEntryReplacement::Enabled
-        } else {
-            HistoryEntryReplacement::Disabled
-        };
-        self.navigate_or_reload_child_browsing_context(load_data, replace, can_gc);
+        self.navigate_or_reload(load_data, HistoryEntryReplacement::Enabled);
     }
 
-    fn create_nested_browsing_context(&self, can_gc: CanGc) {
-        println!("create_nested_browsing_context");
-        // Synchronously create a new browsing context, which will present
-        // `about:blank`. (This is not a navigation.)
-        //
-        // The pipeline started here will synchronously "completely finish
-        // loading", which will then asynchronously call
-        // `iframe_load_event_steps`.
-        //
-        // The precise event timing differs between implementations and
-        // remains controversial:
-        //
-        //  - [Unclear "iframe load event steps" for initial load of about:blank
-        //    in an iframe #490](https://github.com/whatwg/html/issues/490)
-        //  - [load event handling for iframes with no src may not be web
-        //    compatible #4965](https://github.com/whatwg/html/issues/4965)
-        //
+    fn create_toplevel_browsing_context(&self) {
         let url = ServoUrl::parse("about:blank").unwrap();
         let document = document_from_node(self);
         let window = window_from_node(self);
@@ -305,31 +207,20 @@ impl HTMLWebViewElement {
             Some(window.upcast::<GlobalScope>().is_secure_context()),
         );
 
-        //  let top_level_browsing_context_id = TopLevelBrowsingContextId::new();
-        //  let browsing_context_id = top_level_browsing_context_id.into();
+        let top_level_browsing_context_id = TopLevelBrowsingContextId::new();
 
-        let browsing_context_id = BrowsingContextId::new();
-        let top_level_browsing_context_id = window.window_proxy().top_level_browsing_context_id();
-
-        self.pipeline_id.set(None);
-        self.pending_pipeline_id.set(None);
-        self.top_level_browsing_context_id
+        self.pipeline_id.set(pipeline_id);
+        self.browsing_context_id
             .set(Some(top_level_browsing_context_id));
-        self.browsing_context_id.set(Some(browsing_context_id));
         self.start_new_pipeline(
             load_data,
             PipelineType::InitialAboutBlank,
             HistoryEntryReplacement::Disabled,
-            can_gc,
         );
     }
 
     pub(crate) fn destroy_nested_browsing_context(&self) {
-        println!("destroy_nested_browsing_context");
         self.pipeline_id.set(None);
-        self.pending_pipeline_id.set(None);
-        self.about_blank_pipeline_id.set(None);
-        self.top_level_browsing_context_id.set(None);
         self.browsing_context_id.set(None);
     }
 
@@ -337,23 +228,9 @@ impl HTMLWebViewElement {
         &self,
         new_pipeline_id: PipelineId,
         reason: UpdatePipelineIdReason,
-        can_gc: CanGc,
+        _can_gc: CanGc,
     ) {
-        println!("update_pipeline_id");
-        if self.pending_pipeline_id.get() != Some(new_pipeline_id) &&
-            reason == UpdatePipelineIdReason::Navigation
-        {
-            return;
-        }
-
         self.pipeline_id.set(Some(new_pipeline_id));
-
-        // Only terminate the load blocker if the pipeline id was updated due to a traversal.
-        // The load blocker will be terminated for a navigation in iframe_load_event_steps.
-        if reason == UpdatePipelineIdReason::Traversal {
-            let mut blocker = self.load_blocker.borrow_mut();
-            LoadBlocker::terminate(&mut blocker, can_gc);
-        }
 
         self.upcast::<Node>().dirty(NodeDamage::OtherNodeDamage);
         let window = window_from_node(self);
@@ -365,15 +242,10 @@ impl HTMLWebViewElement {
         prefix: Option<Prefix>,
         document: &Document,
     ) -> HTMLWebViewElement {
-        println!("new_inherited");
         HTMLWebViewElement {
             htmlelement: HTMLElement::new_inherited(local_name, prefix, document),
             browsing_context_id: Cell::new(None),
-            top_level_browsing_context_id: Cell::new(None),
             pipeline_id: Cell::new(None),
-            pending_pipeline_id: Cell::new(None),
-            about_blank_pipeline_id: Cell::new(None),
-            load_blocker: DomRefCell::new(None),
             throttled: Cell::new(false),
         }
     }
@@ -385,7 +257,6 @@ impl HTMLWebViewElement {
         document: &Document,
         proto: Option<HandleObject>,
     ) -> DomRoot<HTMLWebViewElement> {
-        println!("webview: new");
         Node::reflect_node_with_proto(
             Box::new(HTMLWebViewElement::new_inherited(
                 local_name, prefix, document,
@@ -397,24 +268,20 @@ impl HTMLWebViewElement {
 
     #[inline]
     pub fn pipeline_id(&self) -> Option<PipelineId> {
-        println!("pipeline_id");
         self.pipeline_id.get()
     }
 
     #[inline]
     pub fn browsing_context_id(&self) -> Option<BrowsingContextId> {
-        println!("browsing_context_id");
-        self.browsing_context_id.get()
+        self.browsing_context_id.get().map(|bc| bc.0)
     }
 
     #[inline]
     pub fn top_level_browsing_context_id(&self) -> Option<TopLevelBrowsingContextId> {
-        println!("top_level_browsing_context_id");
-        self.top_level_browsing_context_id.get()
+        self.browsing_context_id.get()
     }
 
     pub fn set_throttled(&self, throttled: bool) {
-        println!("set_throttled");
         if self.throttled.get() != throttled {
             self.throttled.set(throttled);
         }
@@ -429,14 +296,12 @@ pub trait HTMLWebViewElementLayoutMethods {
 impl HTMLWebViewElementLayoutMethods for LayoutDom<'_, HTMLWebViewElement> {
     #[inline]
     fn pipeline_id(self) -> Option<PipelineId> {
-        println!("layout: pipeline_id");
         (self.unsafe_get()).pipeline_id.get()
     }
 
     #[inline]
     fn browsing_context_id(self) -> Option<BrowsingContextId> {
-        println!("layout: browsing_context_id");
-        (self.unsafe_get()).browsing_context_id.get()
+        (self.unsafe_get()).browsing_context_id.get().map(|bc| bc.0)
     }
 }
 
@@ -449,16 +314,14 @@ impl HTMLWebViewElementMethods for HTMLWebViewElement {
 
     // https://html.spec.whatwg.org/multipage/#dom-iframe-contentwindow
     fn GetContentWindow(&self) -> Option<DomRoot<WindowProxy>> {
-        println!("method: GetContentWindow");
         self.browsing_context_id
-            .get()
+            .get().map(|bc| bc.0)
             .and_then(ScriptThread::find_window_proxy)
     }
 
     // https://html.spec.whatwg.org/multipage/#dom-iframe-contentdocument
     // https://html.spec.whatwg.org/multipage/#concept-bcc-content-document
     fn GetContentDocument(&self) -> Option<DomRoot<Document>> {
-        println!("method: GetContentDocument");
         // Step 1.
         let pipeline_id = self.pipeline_id.get()?;
 
@@ -482,12 +345,10 @@ impl HTMLWebViewElementMethods for HTMLWebViewElement {
 
 impl VirtualMethods for HTMLWebViewElement {
     fn super_type(&self) -> Option<&dyn VirtualMethods> {
-        println!("virtualmethod: super_type");
         Some(self.upcast::<HTMLElement>() as &dyn VirtualMethods)
     }
 
     fn attribute_mutated(&self, attr: &Attr, mutation: AttributeMutation) {
-        println!("virtualmethod: attribute_mutated");
         self.super_type().unwrap().attribute_mutated(attr, mutation);
         match *attr.local_name() {
             local_name!("src") => {
@@ -498,10 +359,10 @@ impl VirtualMethods for HTMLWebViewElement {
                 // but we can't check that directly, since the child browsing context
                 // may be in a different script thread. Instead, we check to see if the parent
                 // is in a document tree and has a browsing context, which is what causes
-                // the child browsing context to be created.
+                // the webview browsing context to be created.
                 if self.upcast::<Node>().is_connected_with_browsing_context() {
-                    debug!("iframe src set while in browsing context.");
-                    self.process_the_iframe_attributes(ProcessingMode::NotFirstTime, CanGc::note());
+                    debug!("webview src set while in browsing context.");
+                    self.process_the_iframe_attributes(ProcessingMode::NotFirstTime);
                 }
             },
             _ => {},
@@ -509,15 +370,14 @@ impl VirtualMethods for HTMLWebViewElement {
     }
 
     fn bind_to_tree(&self, context: &BindContext) {
-        println!("virtualmethod: bind_to_tree");
         if let Some(s) = self.super_type() {
             s.bind_to_tree(context);
         }
 
         let tree_connected = context.tree_connected;
-        let iframe = Trusted::new(self);
-        document_from_node(self).add_delayed_task(task!(IFrameDelayedInitialize: move || {
-            let this = iframe.root();
+        let webview = Trusted::new(self);
+        document_from_node(self).add_delayed_task(task!(WebViewDelayedInitialize: move || {
+            let this = webview.root();
             // https://html.spec.whatwg.org/multipage/#the-iframe-element
             // "When an iframe element is inserted into a document that has
             // a browsing context, the user agent must create a new
@@ -525,20 +385,16 @@ impl VirtualMethods for HTMLWebViewElement {
             // to the newly-created browsing context, and then process the
             // iframe attributes for the "first time"."
             if this.upcast::<Node>().is_connected_with_browsing_context() {
-                debug!("iframe bound to browsing context.");
+                debug!("webview bound to browsing context.");
                 debug_assert!(tree_connected, "is_connected_with_bc, but not tree_connected");
-                this.create_nested_browsing_context(CanGc::note());
-                this.process_the_iframe_attributes(ProcessingMode::FirstTime, CanGc::note());
+                this.create_toplevel_browsing_context();
+                this.process_the_iframe_attributes(ProcessingMode::FirstTime);
             }
         }));
     }
 
     fn unbind_from_tree(&self, context: &UnbindContext) {
-        println!("virtualmethod: unbind_from_tree");
         self.super_type().unwrap().unbind_from_tree(context);
-
-        let mut blocker = self.load_blocker.borrow_mut();
-        LoadBlocker::terminate(&mut blocker, CanGc::note());
 
         // https://html.spec.whatwg.org/multipage/#a-browsing-context-is-discarded
         let window = window_from_node(self);

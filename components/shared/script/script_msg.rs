@@ -266,7 +266,7 @@ pub enum ScriptMsg {
     /// Notify the constellation of a pipeline's document's title.
     TitleChanged(PipelineId, String),
     /// Create a new top level browsing context.
-    NewWebView(ServoUrl, TopLevelBrowsingContextId),
+    CreateWebView(ServoUrl, TopLevelBrowsingContextId),
     /// Close a top level browsing context.
     CloseWebView(TopLevelBrowsingContextId),
 }
@@ -330,7 +330,7 @@ impl fmt::Debug for ScriptMsg {
             RequestAdapter(..) => "RequestAdapter",
             GetWebGPUChan(..) => "GetWebGPUChan",
             TitleChanged(..) => "TitleChanged",
-            NewWebView(..) => "NewWebView",
+            CreateWebView(..) => "NewWebView",
             CloseWebView(..) => "CloseWebView",
         };
         write!(formatter, "ScriptMsg::{}", variant)

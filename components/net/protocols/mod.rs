@@ -35,6 +35,10 @@ pub trait ProtocolHandler: Send + Sync {
         done_chan: &mut DoneChannel,
         context: &FetchContext,
     ) -> Pin<Box<dyn Future<Output = Response> + Send>>;
+
+    fn is_fetchable(&self) -> bool {
+        false
+    }
 }
 
 #[derive(Default)]
@@ -79,6 +83,13 @@ impl ProtocolRegistry {
 
             self.handlers.entry(scheme).or_insert(handler);
         }
+    }
+
+    pub fn is_fetchable(&self, scheme: &str) -> bool {
+        self.handlers
+            .get(scheme)
+            .map(|handler| handler.is_fetchable())
+            .unwrap_or(false)
     }
 }
 

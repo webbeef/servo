@@ -38,10 +38,8 @@ pub struct Response {
     reflector_: Reflector,
     headers_reflector: MutNullableDom<Headers>,
     /// `None` can be considered a StatusCode of `0`.
-    #[ignore_malloc_size_of = "Defined in hyper"]
     #[no_trace]
-    status: DomRefCell<Option<StatusCode>>,
-    raw_status: DomRefCell<Option<(u16, Vec<u8>)>>,
+    status: DomRefCell<(Option<StatusCode>, Vec<u8>)>,
     response_type: DomRefCell<DOMResponseType>,
     #[no_trace]
     url: DomRefCell<Option<ServoUrl>>,
@@ -64,8 +62,7 @@ impl Response {
         Response {
             reflector_: Reflector::new(),
             headers_reflector: Default::default(),
-            status: DomRefCell::new(Some(StatusCode::OK)),
-            raw_status: DomRefCell::new(Some((200, b"".to_vec()))),
+            status: DomRefCell::new((Some(StatusCode::OK), b"".to_vec())),
             response_type: DomRefCell::new(DOMResponseType::Default),
             url: DomRefCell::new(None),
             url_list: DomRefCell::new(vec![]),
@@ -119,11 +116,11 @@ impl Response {
 
         let r = Response::new_with_proto(global, proto, can_gc);
 
-        // Step 3
-        *r.status.borrow_mut() = Some(StatusCode::from_u16(init.status).unwrap());
-
-        // Step 4
-        *r.raw_status.borrow_mut() = Some((init.status, init.statusText.clone().into()));
+        // Step 3 & 4
+        *r.status.borrow_mut() = (
+            Some(StatusCode::from_u16(init.status).unwrap()),
+            init.statusText.clone().into(),
+        );
 
         // Step 5
         if let Some(ref headers_member) = init.headers {
@@ -177,7 +174,7 @@ impl Response {
         let r = Response::new(global);
         *r.response_type.borrow_mut() = DOMResponseType::Error;
         r.Headers().set_guard(Guard::Immutable);
-        *r.raw_status.borrow_mut() = Some((0, b"".to_vec()));
+        *r.status.borrow_mut() = (None, b"".to_vec());
         r
     }
 
@@ -207,8 +204,7 @@ impl Response {
         let r = Response::new(global);
 
         // Step 5
-        *r.status.borrow_mut() = Some(StatusCode::from_u16(status).unwrap());
-        *r.raw_status.borrow_mut() = Some((status, b"".to_vec()));
+        *r.status.borrow_mut() = (Some(StatusCode::from_u16(status).unwrap()), b"".to_vec());
 
         // Step 6
         let url_bytestring =
@@ -298,28 +294,28 @@ impl ResponseMethods for Response {
 
     // https://fetch.spec.whatwg.org/#dom-response-status
     fn Status(&self) -> u16 {
-        match *self.raw_status.borrow() {
-            Some((s, _)) => s,
-            None => 0,
+        match *self.status.borrow() {
+            (Some(s), _) => s.as_u16(),
+            _ => 0,
         }
     }
 
     // https://fetch.spec.whatwg.org/#dom-response-ok
     fn Ok(&self) -> bool {
         match *self.status.borrow() {
-            Some(s) => {
+            (Some(s), _) => {
                 let status_num = s.as_u16();
                 (200..=299).contains(&status_num)
             },
-            None => false,
+            _ => false,
         }
     }
 
     // https://fetch.spec.whatwg.org/#dom-response-statustext
     fn StatusText(&self) -> ByteString {
-        match *self.raw_status.borrow() {
-            Some((_, ref st)) => ByteString::new(st.clone()),
-            None => ByteString::new(b"".to_vec()),
+        match *self.status.borrow() {
+            (Some(_), ref st) => ByteString::new(st.clone()),
+            _ => ByteString::new(b"".to_vec()),
         }
     }
 
@@ -345,11 +341,10 @@ impl ResponseMethods for Response {
         // Instead of storing a net_traits::Response internally, we
         // only store the relevant fields, and only clone them here
         *new_response.response_type.borrow_mut() = *self.response_type.borrow();
-        *new_response.status.borrow_mut() = *self.status.borrow();
         new_response
-            .raw_status
+            .status
             .borrow_mut()
-            .clone_from(&self.raw_status.borrow());
+            .clone_from(&self.status.borrow());
         new_response.url.borrow_mut().clone_from(&self.url.borrow());
         new_response
             .url_list
@@ -420,8 +415,8 @@ impl Response {
         });
     }
 
-    pub fn set_raw_status(&self, status: Option<(u16, Vec<u8>)>) {
-        *self.raw_status.borrow_mut() = status;
+    pub fn set_status(&self, status: (Option<StatusCode>, Vec<u8>)) {
+        self.status.borrow_mut().clone_from(&status);
     }
 
     pub fn set_final_url(&self, final_url: ServoUrl) {
@@ -435,20 +430,17 @@ impl Response {
     fn set_response_members_by_type(&self, response_type: DOMResponseType) {
         match response_type {
             DOMResponseType::Error => {
-                *self.status.borrow_mut() = None;
-                self.set_raw_status(None);
+                *self.status.borrow_mut() = (None, b"".to_vec());
                 self.set_headers(None);
             },
             DOMResponseType::Opaque => {
                 *self.url_list.borrow_mut() = vec![];
-                *self.status.borrow_mut() = None;
-                self.set_raw_status(None);
+                *self.status.borrow_mut() = (None, b"".to_vec());
                 self.set_headers(None);
                 self.body_stream.set(None);
             },
             DOMResponseType::Opaqueredirect => {
-                *self.status.borrow_mut() = None;
-                self.set_raw_status(None);
+                *self.status.borrow_mut() = (None, b"".to_vec());
                 self.set_headers(None);
                 self.body_stream.set(None);
             },

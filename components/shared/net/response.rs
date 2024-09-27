@@ -96,9 +96,7 @@ pub struct Response {
     url: Option<ServoUrl>,
     pub url_list: Vec<ServoUrl>,
     /// `None` can be considered a StatusCode of `0`.
-    #[ignore_malloc_size_of = "Defined in hyper"]
-    pub status: Option<(StatusCode, String)>,
-    pub raw_status: Option<(u16, Vec<u8>)>,
+    pub status: (Option<StatusCode>, Vec<u8>),
     #[ignore_malloc_size_of = "Defined in hyper"]
     pub headers: HeaderMap,
     #[ignore_malloc_size_of = "Mutex heap size undefined"]
@@ -131,8 +129,7 @@ impl Response {
             termination_reason: None,
             url: Some(url),
             url_list: vec![],
-            status: Some((StatusCode::OK, "".to_string())),
-            raw_status: Some((200, b"".to_vec())),
+            status: (Some(StatusCode::OK), b"".to_vec()),
             headers: HeaderMap::new(),
             body: Arc::new(Mutex::new(ResponseBody::Empty)),
             cache_state: CacheState::None,
@@ -154,8 +151,7 @@ impl Response {
         res.headers = init.headers;
         res.referrer = init.referrer;
         res.status = StatusCode::from_u16(init.status_code)
-            .map(|s| (s, s.to_string()))
-            .ok();
+            .map(|s| (Some(s), s.to_string().as_bytes().into())).unwrap();
         res
     }
 
@@ -165,8 +161,7 @@ impl Response {
             termination_reason: None,
             url: None,
             url_list: vec![],
-            status: None,
-            raw_status: None,
+            status: (None, b"".to_vec()),
             headers: HeaderMap::new(),
             body: Arc::new(Mutex::new(ResponseBody::Empty)),
             cache_state: CacheState::None,
@@ -282,14 +277,14 @@ impl Response {
                 response.url_list = vec![];
                 response.url = None;
                 response.headers = HeaderMap::new();
-                response.status = None;
+                response.status = (None, b"".to_vec());
                 response.body = Arc::new(Mutex::new(ResponseBody::Empty));
                 response.cache_state = CacheState::None;
             },
 
             ResponseType::OpaqueRedirect => {
                 response.headers = HeaderMap::new();
-                response.status = None;
+                response.status = (None, b"".to_vec());
                 response.body = Arc::new(Mutex::new(ResponseBody::Empty));
                 response.cache_state = CacheState::None;
             },
@@ -310,7 +305,10 @@ impl Response {
             );
             metadata.location_url.clone_from(&response.location_url);
             metadata.headers = Some(Serde(response.headers.clone()));
-            metadata.status.clone_from(&response.raw_status);
+            metadata.status = match &response.status {
+                (Some(status), text) => Some((status.as_u16(), text.to_vec())),
+                _ => None,
+            };
             metadata.https_state = response.https_state;
             metadata.referrer.clone_from(&response.referrer);
             metadata.referrer_policy = response.referrer_policy;

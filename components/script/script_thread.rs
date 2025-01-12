@@ -586,9 +586,8 @@ impl ScriptThread {
             // If resource is a request whose url's scheme is "javascript"
             // https://html.spec.whatwg.org/multipage/#javascript-protocol
             if is_javascript {
-                let window = match script_thread.documents.borrow().find_window(pipeline_id) {
-                    None => return,
-                    Some(window) => window,
+                let Some(window) = script_thread.documents.borrow().find_window(pipeline_id) else {
+                    return;
                 };
                 let global = window.as_global_scope();
                 let trusted_global = Trusted::new(global);
@@ -2604,17 +2603,15 @@ impl ScriptThread {
         url: ServoUrl,
         can_gc: CanGc,
     ) {
-        let window = self.documents.borrow().find_window(pipeline_id);
-        match window {
-            None => {
-                warn!(
-                    "update history state after pipeline {} closed.",
-                    pipeline_id
-                );
-            },
-            Some(window) => window
+        if let Some(window) = self.documents.borrow().find_window(pipeline_id) {
+            window
                 .History()
-                .activate_state(history_state_id, url, can_gc),
+                .activate_state(history_state_id, url, can_gc);
+        } else {
+            warn!(
+                "update history state after pipeline {} closed.",
+                pipeline_id
+            );
         }
     }
 
@@ -2623,15 +2620,13 @@ impl ScriptThread {
         pipeline_id: PipelineId,
         history_states: Vec<HistoryStateId>,
     ) {
-        let window = self.documents.borrow().find_window(pipeline_id);
-        match window {
-            None => {
-                warn!(
-                    "update history state after pipeline {} closed.",
-                    pipeline_id
-                );
-            },
-            Some(window) => window.History().remove_states(history_states),
+        if let Some(window) = self.documents.borrow().find_window(pipeline_id) {
+            window.History().remove_states(history_states);
+        } else {
+            warn!(
+                "update history state after pipeline {} closed.",
+                pipeline_id
+            );
         }
     }
 
@@ -2700,9 +2695,8 @@ impl ScriptThread {
 
     /// Handles a request for the window title.
     fn handle_get_title_msg(&self, pipeline_id: PipelineId) {
-        let document = match self.documents.borrow().find_document(pipeline_id) {
-            Some(document) => document,
-            None => return warn!("Message sent to closed pipeline {}.", pipeline_id),
+        let Some(document) = self.documents.borrow().find_document(pipeline_id) else {
+            return warn!("Message sent to closed pipeline {}.", pipeline_id);
         };
         document.send_title_to_embedder();
     }
@@ -2842,9 +2836,8 @@ impl ScriptThread {
         old_value: Option<String>,
         new_value: Option<String>,
     ) {
-        let window = match self.documents.borrow().find_window(pipeline_id) {
-            None => return warn!("Storage event sent to closed pipeline {}.", pipeline_id),
-            Some(window) => window,
+        let Some(window) = self.documents.borrow().find_window(pipeline_id) else {
+            return warn!("Storage event sent to closed pipeline {}.", pipeline_id);
         };
 
         let storage = match storage_type {
@@ -3331,12 +3324,9 @@ impl ScriptThread {
         node_address: Option<UntrustedNodeAddress>,
         can_gc: CanGc,
     ) -> TouchEventResult {
-        let document = match self.documents.borrow().find_document(pipeline_id) {
-            Some(document) => document,
-            None => {
-                warn!("Message sent to closed pipeline {}.", pipeline_id);
-                return TouchEventResult::Processed(true);
-            },
+        let Some(document) = self.documents.borrow().find_document(pipeline_id) else {
+            warn!("Message sent to closed pipeline {}.", pipeline_id);
+            return TouchEventResult::Processed(true);
         };
         unsafe { document.handle_touch_event(event_type, identifier, point, node_address, can_gc) }
     }
@@ -3623,9 +3613,8 @@ impl ScriptThread {
         column: u32,
         msg: String,
     ) {
-        let sender = match self.senders.devtools_server_sender {
-            Some(ref sender) => sender,
-            None => return,
+        let Some(ref sender) = self.senders.devtools_server_sender else {
+            return;
         };
 
         if let Some(global) = self.documents.borrow().find_global(pipeline_id) {

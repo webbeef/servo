@@ -114,6 +114,13 @@ impl EmbedderReceiver {
     }
 }
 
+#[derive(Clone)]
+pub enum AllowNavigationOption {
+    Disallow,
+    AllowInSameTab,
+    AllowInNewTab,
+}
+
 #[derive(Deserialize, Serialize)]
 pub enum ContextMenuResult {
     Dismissed,

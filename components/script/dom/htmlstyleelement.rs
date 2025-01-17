@@ -6,7 +6,7 @@ use std::cell::Cell;
 
 use cssparser::{Parser as CssParser, ParserInput};
 use dom_struct::dom_struct;
-use html5ever::{local_name, namespace_url, ns, LocalName, Prefix};
+use html5ever::{LocalName, Prefix};
 use js::rust::HandleObject;
 use net_traits::ReferrerPolicy;
 use servo_arc::Arc;
@@ -87,7 +87,6 @@ impl HTMLStyleElement {
 
     pub(crate) fn parse_own_css(&self) {
         let node = self.upcast::<Node>();
-        let element = self.upcast::<Element>();
         assert!(node.is_connected());
 
         // Step 4. of <https://html.spec.whatwg.org/multipage/#the-style-element%3Aupdate-a-style-block>
@@ -99,12 +98,6 @@ impl HTMLStyleElement {
 
         let window = node.owner_window();
         let doc = self.owner_document();
-
-        let mq_attribute = element.get_attribute(&ns!(), &local_name!("media"));
-        let mq_str = match mq_attribute {
-            Some(a) => String::from(&**a.value()),
-            None => String::new(),
-        };
 
         let data = node
             .GetTextContent()
@@ -122,7 +115,8 @@ impl HTMLStyleElement {
             None,
         );
         let shared_lock = node.owner_doc().style_shared_lock().clone();
-        let mut input = ParserInput::new(&mq_str);
+        let mq = self.Media();
+        let mut input = ParserInput::new(&mq);
         let mq =
             Arc::new(shared_lock.wrap(MediaList::parse(&context, &mut CssParser::new(&mut input))));
         let loader = StylesheetLoader::for_element(self.upcast());
@@ -259,10 +253,13 @@ impl VirtualMethods for HTMLStyleElement {
         }
 
         let node = self.upcast::<Node>();
-        if attr.name() == "type" &&
-            (node.is_in_a_document_tree() || node.is_in_a_shadow_tree()) &&
-            !self.in_stack_of_open_elements.get()
+        if !(node.is_in_a_document_tree() || node.is_in_a_shadow_tree()) ||
+            self.in_stack_of_open_elements.get()
         {
+            return;
+        }
+
+        if attr.name() == "type" || attr.name() == "media" {
             if let AttributeMutation::Set(Some(old_value)) = mutation {
                 if **old_value == **attr.value() {
                     return;
@@ -334,4 +331,10 @@ impl HTMLStyleElementMethods<crate::DomTypeHolder> for HTMLStyleElement {
 
     // <https://html.spec.whatwg.org/multipage/#HTMLStyleElement-partial>
     make_setter!(SetType, "type");
+
+    // <https://html.spec.whatwg.org/multipage/#attr-style-media>
+    make_getter!(Media, "media");
+
+    // <https://html.spec.whatwg.org/multipage/#attr-style-media>
+    make_setter!(SetMedia, "media");
 }

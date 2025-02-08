@@ -225,8 +225,6 @@ impl OneshotTimers {
             let callback = timer.callback;
             callback.invoke(global, &self.js_timers, can_gc);
         }
-
-        self.schedule_timer_call();
     }
 
     fn base_time(&self) -> Instant {

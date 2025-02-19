@@ -31,6 +31,7 @@ use embedder_traits::{
 };
 use encoding_rs::{Encoding, UTF_8};
 use euclid::default::{Point2D, Rect, Size2D};
+use html5ever::tree_builder::{QuirksMode as TreeQuirksMode, TreeBuilderOpts};
 use html5ever::{local_name, namespace_url, ns, LocalName, Namespace, QualName};
 use hyper_serde::Serde;
 use ipc_channel::ipc;
@@ -1071,6 +1072,23 @@ impl Document {
     /// Return whether scripting is enabled or not
     pub(crate) fn is_scripting_enabled(&self) -> bool {
         self.scripting_enabled
+    }
+
+    /// Return tree builder options suitable for this document.
+    pub(crate) fn tree_builder_options(&self) -> TreeBuilderOpts {
+        let quirks_mode = match self.quirks_mode.get() {
+            QuirksMode::Quirks => TreeQuirksMode::Quirks,
+            QuirksMode::LimitedQuirks => TreeQuirksMode::LimitedQuirks,
+            QuirksMode::NoQuirks => TreeQuirksMode::NoQuirks,
+        };
+
+        TreeBuilderOpts {
+            ignore_missing_rules: true,
+            quirks_mode,
+            iframe_srcdoc: self.url().as_str() == "about:srcdoc",
+            scripting_enabled: self.scripting_enabled,
+            ..Default::default()
+        }
     }
 
     /// Return the element that currently has focus.

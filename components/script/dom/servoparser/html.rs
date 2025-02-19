@@ -11,7 +11,7 @@ use html5ever::buffer_queue::BufferQueue;
 use html5ever::serialize::TraversalScope::IncludeNode;
 use html5ever::serialize::{AttrRef, Serialize, Serializer, TraversalScope};
 use html5ever::tokenizer::{Tokenizer as HtmlTokenizer, TokenizerOpts, TokenizerResult};
-use html5ever::tree_builder::{Tracer as HtmlTracer, TreeBuilder, TreeBuilderOpts};
+use html5ever::tree_builder::{Tracer as HtmlTracer, TreeBuilder};
 use html5ever::QualName;
 use js::jsapi::JSTracer;
 use servo_url::ServoUrl;
@@ -54,10 +54,7 @@ impl Tokenizer {
             parsing_algorithm,
         };
 
-        let options = TreeBuilderOpts {
-            ignore_missing_rules: true,
-            ..Default::default()
-        };
+        let options = document.tree_builder_options();
 
         let inner = if let Some(fc) = fragment_context {
             let tb = TreeBuilder::new_for_fragment(

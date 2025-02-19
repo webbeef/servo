@@ -264,6 +264,8 @@ impl Tokenizer {
             fragment_context_is_some = true;
         };
 
+        let options = document.tree_builder_options();
+
         // Create new thread for HtmlTokenizer. This is where parser actions
         // will be generated from the input provided. These parser actions are then passed
         // onto the main thread to be executed.
@@ -277,6 +279,7 @@ impl Tokenizer {
                     form_parse_node,
                     to_tokenizer_sender,
                     html_tokenizer_receiver,
+                    options,
                 );
             })
             .expect("HTML Parser thread spawning failed");
@@ -573,12 +576,8 @@ fn run(
     form_parse_node: Option<ParseNode>,
     sender: Sender<ToTokenizerMsg>,
     receiver: Receiver<ToHtmlTokenizerMsg>,
+    options: TreeBuilderOpts,
 ) {
-    let options = TreeBuilderOpts {
-        ignore_missing_rules: true,
-        ..Default::default()
-    };
-
     let html_tokenizer = if fragment_context_is_some {
         let tb =
             TreeBuilder::new_for_fragment(sink, ctxt_parse_node.unwrap(), form_parse_node, options);

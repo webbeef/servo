@@ -183,6 +183,7 @@ mod from_script {
                 Self::RespondToScreenshotReadinessRequest(..) => {
                     target!("RespondToScreenshotReadinessRequest")
                 },
+                Self::AtProto(..) => target!("AtProto"),
             }
         }
     }

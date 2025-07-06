@@ -7,6 +7,7 @@
 #[macro_use]
 mod tracing;
 
+mod atproto;
 mod broadcastchannel;
 mod browsingcontext;
 mod constellation;

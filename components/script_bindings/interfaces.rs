@@ -113,3 +113,7 @@ pub trait WindowHelpers {
         object: MutableHandleObject,
     );
 }
+
+pub trait PincoyaHelpers {
+    fn is_pincoya_api(cx: JSContext, global: HandleObject) -> bool;
+}

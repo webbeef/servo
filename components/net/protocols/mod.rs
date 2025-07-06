@@ -18,13 +18,17 @@ use servo_url::ServoUrl;
 
 use crate::fetch::methods::{DoneChannel, FetchContext, RangeRequestBounds};
 
+mod atproto;
 mod blob;
 mod data;
 mod file;
+mod trusted;
 
+use atproto::protocol::AtProtocolHandler;
 use blob::BlobProtocolHander;
 use data::DataProtocolHander;
 use file::FileProtocolHander;
+use trusted::protocol::TrustedProtocolHandler;
 
 // The set of schemes that can't be registered.
 static FORBIDDEN_SCHEMES: [&str; 4] = ["http", "https", "chrome", "about"];
@@ -90,6 +94,12 @@ impl ProtocolRegistry {
             .expect("Infallible");
         registry
             .register("file", FileProtocolHander::default())
+            .expect("Infallible");
+        registry
+            .register("trusted", TrustedProtocolHandler::default())
+            .expect("Infallible");
+        registry
+            .register("at", AtProtocolHandler::default())
             .expect("Infallible");
         registry
     }

@@ -5,6 +5,9 @@
 #![deny(unsafe_code)]
 
 use std::fmt::Display;
+use std::fs::File;
+use std::io::Read;
+use std::path::Path;
 use std::sync::{LazyLock, OnceLock};
 use std::thread::{self, JoinHandle};
 
@@ -20,6 +23,7 @@ use hyper_serde::Serde;
 use hyper_util::client::legacy::Error as HyperError;
 use ipc_channel::ipc::{self, IpcError, IpcReceiver, IpcSender};
 use ipc_channel::router::ROUTER;
+use log::warn;
 use malloc_size_of::malloc_size_of_is_0;
 use malloc_size_of_derive::MallocSizeOf;
 use mime::Mime;
@@ -53,6 +57,7 @@ pub const DOCUMENT_ACCEPT_HEADER_VALUE: HeaderValue =
 /// An implementation of the [Fetch specification](https://fetch.spec.whatwg.org/)
 pub mod fetch {
     pub mod headers;
+    pub mod utils;
 }
 
 /// A loading context, for context-specific sniffing, as defined in
@@ -496,6 +501,61 @@ pub enum FetchChannels {
     Prefetch,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct BasicAuthCacheEntry {
+    pub user_name: String,
+    pub password: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct BearerAuthCacheEntry {
+    pub token: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub enum AuthCacheEntry {
+    Basic(BasicAuthCacheEntry),
+    Bearer(BearerAuthCacheEntry),
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct AtProtoSessionState {
+    pub endpoint: ServoUrl,
+    pub access_jwt: String,
+    pub refresh_jwt: String,
+}
+
+static ATPROTO_SESSION_FILE: &str = "atproto_session.json";
+
+impl AtProtoSessionState {
+    pub fn load(config_dir: &Path) -> Option<Self> {
+        let path = config_dir.join(ATPROTO_SESSION_FILE);
+
+        let Ok(mut file) = File::open(&path) else {
+            return None;
+        };
+
+        let mut string_buffer: String = String::new();
+        if file.read_to_string(&mut string_buffer).is_err() {
+            return None;
+        }
+
+        serde_json::from_str(&string_buffer).ok()
+    }
+
+    pub fn save(&self, config_dir: &Path) {
+        base::write_json_to_file(&self, config_dir, ATPROTO_SESSION_FILE);
+    }
+
+    // Delete the persistent storage.
+    pub fn reset(config_dir: &Path) {
+        let path = config_dir.join(ATPROTO_SESSION_FILE);
+        if let Err(err) = std::fs::remove_file(path) {
+            warn!("Failed to remove {ATPROTO_SESSION_FILE}: {err}");
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 pub enum CoreResourceMsg {
     Fetch(RequestBuilder, FetchChannels),
@@ -542,6 +602,10 @@ pub enum CoreResourceMsg {
     /// Break the load handler loop, send a reply when done cleaning up local resources
     /// and exit
     Exit(IpcSender<()>),
+    /// Update the ATProto session state.
+    UpdateAtProtoSession(Option<AtProtoSessionState>),
+    /// Retrieve the current ATProto session state.
+    GetAtProtoSession(IpcSender<Option<AtProtoSessionState>>),
 }
 
 // FIXME: https://github.com/servo/servo/issues/34591

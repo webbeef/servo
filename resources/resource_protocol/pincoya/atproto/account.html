@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<!--
+Copyright (C) 2025 me@webbeef.org
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as
+published by the Free Software Foundation, version 3.
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+Affero General Public License for more details.
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+-->
+<html>
+  <head>
+    <title>ATProto Account</title>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="stylesheet" href="resource:///pincoya/matcha.css" />
+    <link rel="stylesheet" href="resource:///pincoya/atproto/browser.css" />
+    <link rel="stylesheet" href="resource:///pincoya/atproto/account.css" />
+    <script src="resource:///pincoya/atproto/account.js"></script>
+  </head>
+  <body>
+    <h1>ATProto Account</h1>
+    <header>
+      User:
+      <input id="handle" value="me.webbeef.org" placeholder="Handle or DID" />
+      Password:
+      <input
+        id="password"
+        type="password"
+        value="!wo9WyM$$S7z$X"
+        placeholder="Password"
+      />
+      <button id="login-button">Login</button>
+    </header>
+    <main>
+      <div class="hidden" id="logged-in">
+        Currently logged in as <span class="handle" id="current-handle"></span>
+        <button id="logout-button">Logout</button>
+        <details>
+          <summary>Create record</summary>
+          Collection:
+          <input id="record-collection" value="org.pincoya.test" /><br />
+          Record:
+          <textarea id="record-content" rows="10">{ "hello": "world!"}</textarea
+          ><br />
+          <button id="submit-record">Create</button>
+          <pre id="create-record-result"></pre>
+        </details>
+        <details>
+          <summary>Upload blob</summary>
+          Blob text:
+          <textarea id="blob-content" rows="10">
+Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.</textarea
+          ><br />
+          <button id="upload-blob">Create</button>
+          <pre id="upload-blob-result"></pre>
+        </details>
+      </div>
+      <div class="hidden" id="logged-out">Currently logged out</div>
+    </main>
+  </body>
+</html>

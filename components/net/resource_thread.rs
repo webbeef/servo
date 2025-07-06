@@ -27,10 +27,10 @@ use net_traits::pub_domains::public_suffix_list_size_of;
 use net_traits::request::{Destination, RequestBuilder, RequestId};
 use net_traits::response::{Response, ResponseInit};
 use net_traits::{
-    AsyncRuntime, CookieAsyncResponse, CookieData, CookieSource, CoreResourceMsg,
-    CoreResourceThread, CustomResponseMediator, DiscardFetch, FetchChannels, FetchTaskTarget,
-    ResourceFetchTiming, ResourceThreads, ResourceTimingType, WebSocketDomAction,
-    WebSocketNetworkEvent,
+    AsyncRuntime, AtProtoSessionState, AuthCacheEntry, CookieAsyncResponse, CookieData,
+    CookieSource, CoreResourceMsg, CoreResourceThread, CustomResponseMediator, DiscardFetch,
+    FetchChannels, FetchTaskTarget, ResourceFetchTiming, ResourceThreads, ResourceTimingType,
+    WebSocketDomAction, WebSocketNetworkEvent,
 };
 use parking_lot::{Mutex, RwLock};
 use profile_traits::mem::{
@@ -189,14 +189,17 @@ fn create_http_states(
     let mut auth_cache = AuthCache::default();
     let http_cache = HttpCache::default();
     let mut cookie_jar = CookieStorage::new(150);
+    let mut atproto_session = None;
     if let Some(config_dir) = config_dir {
         base::read_json_from_file(&mut auth_cache, config_dir, "auth_cache.json");
         base::read_json_from_file(&mut hsts_list, config_dir, "hsts_list.json");
         base::read_json_from_file(&mut cookie_jar, config_dir, "cookie_jar.json");
+        atproto_session = AtProtoSessionState::load(config_dir);
     }
 
     let override_manager = CertificateErrorOverrideManager::new();
     let http_state = HttpState {
+        config_dir: config_dir.map(|p| p.into()),
         hsts_list: RwLock::new(hsts_list),
         cookie_jar: RwLock::new(cookie_jar),
         auth_cache: RwLock::new(auth_cache),
@@ -210,10 +213,12 @@ fn create_http_states(
         )),
         override_manager,
         embedder_proxy: Mutex::new(embedder_proxy.clone()),
+        atproto_session: RwLock::new(atproto_session),
     };
 
     let override_manager = CertificateErrorOverrideManager::new();
     let private_http_state = HttpState {
+        config_dir: config_dir.map(|p| p.into()),
         hsts_list: RwLock::new(HstsList::default()),
         cookie_jar: RwLock::new(CookieStorage::new(150)),
         auth_cache: RwLock::new(AuthCache::default()),
@@ -227,6 +232,7 @@ fn create_http_states(
         )),
         override_manager,
         embedder_proxy: Mutex::new(embedder_proxy),
+        atproto_session: RwLock::new(None),
     };
 
     (Arc::new(http_state), Arc::new(private_http_state))
@@ -539,15 +545,16 @@ impl ResourceChannelManager {
                 let _ = sender.send(());
                 return false;
             },
+            CoreResourceMsg::UpdateAtProtoSession(session) => {
+                http_state.update_atproto_session(session);
+            },
+            CoreResourceMsg::GetAtProtoSession(sender) => {
+                let atproto_session = http_state.atproto_session.read();
+                let _ = sender.send(atproto_session.clone());
+            },
         }
         true
     }
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct AuthCacheEntry {
-    pub user_name: String,
-    pub password: String,
 }
 
 impl Default for AuthCache {

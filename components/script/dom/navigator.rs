@@ -23,6 +23,7 @@ use servo_config::pref;
 use servo_url::ServoUrl;
 
 use crate::body::Extractable;
+use crate::dom::atproto::AtProto;
 use crate::dom::bindings::cell::DomRefCell;
 use crate::dom::bindings::codegen::Bindings::NavigatorBinding::NavigatorMethods;
 use crate::dom::bindings::codegen::Bindings::WindowBinding::Window_Binding::WindowMethods;
@@ -123,6 +124,7 @@ pub(crate) struct Navigator {
     /// <https://www.w3.org/TR/gamepad/#dfn-hasgamepadgesture>
     has_gamepad_gesture: Cell<bool>,
     servo_internals: MutNullableDom<ServoInternals>,
+    at_proto: MutNullableDom<AtProto>,
 }
 
 impl Navigator {
@@ -146,6 +148,7 @@ impl Navigator {
             gpu: Default::default(),
             has_gamepad_gesture: Cell::new(false),
             servo_internals: Default::default(),
+            at_proto: Default::default(),
         }
     }
 
@@ -571,6 +574,12 @@ impl NavigatorMethods<crate::DomTypeHolder> for Navigator {
             register_or_unregister: RegisterOrUnregister::Unregister,
         });
         Ok(())
+    }
+
+    /// <https://webbeef.org/atproto>
+    fn Atproto(&self) -> DomRoot<AtProto> {
+        self.at_proto
+            .or_init(|| AtProto::new(&self.global(), CanGc::note()))
     }
 }
 

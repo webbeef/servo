@@ -40,10 +40,13 @@ rand = { workspace = true }
 rustc-hash = { workspace = true }
 rustls-pki-types = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 servo_arc = { workspace = true }
 servo_url = { path = "../../url" }
+sync_wrapper = "1.0"
 tower = { workspace = true }
 url = { workspace = true }
+tokio = { workspace = true }
 uuid = { workspace = true }
 webrender_api = { workspace = true }
 

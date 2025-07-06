@@ -90,6 +90,7 @@ use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::marker::PhantomData;
 use std::mem::replace;
+use std::path::PathBuf;
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
 use std::thread::JoinHandle;
@@ -177,6 +178,7 @@ use webgpu_traits::{WebGPU, WebGPURequest};
 use webrender_api::ExternalScrollId;
 use webrender_api::units::LayoutVector2D;
 
+use crate::atproto::AtProtoManager;
 use crate::broadcastchannel::BroadcastChannels;
 use crate::browsingcontext::{
     AllBrowsingContextsIterator, BrowsingContext, FullyActiveBrowsingContextsIterator,
@@ -503,6 +505,9 @@ pub struct Constellation<STF, SWF> {
     /// ready to take place, at which point the Constellation informs the renderer that it
     /// can start the process of taking the screenshot.
     screenshot_readiness_requests: Vec<ScreenshotReadinessRequest>,
+
+    /// The main process side of the ATProdo DOM API.
+    at_proto: AtProtoManager,
 }
 
 /// State needed to construct a constellation.
@@ -561,6 +566,9 @@ pub struct InitialConstellationState {
 
     /// The async runtime.
     pub async_runtime: Box<dyn AsyncRuntime>,
+
+    /// The configuration directory used for storage.
+    pub config_dir: Option<PathBuf>,
 }
 
 /// When we are exiting a pipeline, we can either force exiting or not.
@@ -686,7 +694,7 @@ where
                     devtools_sender: state.devtools_sender,
                     #[cfg(feature = "bluetooth")]
                     bluetooth_ipc_sender: state.bluetooth_thread,
-                    public_resource_threads: state.public_resource_threads,
+                    public_resource_threads: state.public_resource_threads.clone(),
                     private_resource_threads: state.private_resource_threads,
                     public_storage_threads: state.public_storage_threads,
                     private_storage_threads: state.private_storage_threads,
@@ -740,6 +748,9 @@ where
                     )),
                     pending_viewport_changes: Default::default(),
                     screenshot_readiness_requests: Vec::new(),
+                    at_proto: AtProtoManager::new(
+                        state.public_resource_threads.core_thread,
+                    ),
                 };
 
                 constellation.run();
@@ -1968,6 +1979,9 @@ where
             },
             ScriptToConstellationMessage::RespondToScreenshotReadinessRequest(response) => {
                 self.handle_screenshot_readiness_response(source_pipeline_id, response);
+            },
+            ScriptToConstellationMessage::AtProto(request, response) => {
+                self.at_proto.process_request(request, response);
             },
         }
     }

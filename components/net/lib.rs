@@ -23,6 +23,11 @@ pub mod subresource_integrity;
 #[cfg(feature = "test-util")]
 pub mod test_util;
 mod websocket_loader;
+pub mod atproto {
+    pub mod pds;
+    pub mod session;
+    pub mod xrpc;
+}
 
 /// An implementation of the [Fetch specification](https://fetch.spec.whatwg.org/)
 pub mod fetch {

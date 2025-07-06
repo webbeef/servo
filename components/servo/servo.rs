@@ -906,7 +906,7 @@ fn create_constellation(
     let privileged_urls = protocols.privileged_urls();
 
     let (private_storage_threads, public_storage_threads) =
-        new_storage_threads(mem_profiler_chan.clone(), config_dir);
+        new_storage_threads(mem_profiler_chan.clone(), config_dir.clone());
 
     let system_font_service = Arc::new(
         SystemFontService::spawn(
@@ -940,6 +940,7 @@ fn create_constellation(
         user_content_manager,
         async_runtime,
         privileged_urls,
+        config_dir,
     };
 
     let layout_factory = Arc::new(LayoutFactoryImpl());

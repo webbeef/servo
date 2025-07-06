@@ -88,6 +88,19 @@ impl ServoUrl {
     }
 
     pub fn origin(&self) -> ImmutableOrigin {
+        // We want trusted:// urls to have a tuple origin similar to https:// ones.
+        // TODO: maybe fork the url crate instead...
+        if self.0.scheme() == "trusted" {
+            use url::Origin;
+
+            let url_str = self.as_str();
+            let new_url = Url::parse(&url_str.replace("trusted://", "https://")).unwrap();
+            let origin = match new_url.origin() {
+                Origin::Tuple(_scheme, host, port) => Origin::Tuple("trusted".into(), host, port),
+                Origin::Opaque(val) => Origin::Opaque(val),
+            };
+            return ImmutableOrigin::new(origin);
+        }
         ImmutableOrigin::new(self.0.origin())
     }
 

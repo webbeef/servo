@@ -215,6 +215,7 @@ pub(crate) mod abortsignal;
 pub(crate) mod abstractrange;
 pub(crate) mod activation;
 pub(crate) mod animationevent;
+pub(crate) mod atproto;
 pub(crate) mod attr;
 pub(crate) mod audio;
 pub(crate) use self::audio::*;

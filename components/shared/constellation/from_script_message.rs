@@ -531,6 +531,79 @@ pub enum ScreenshotReadinessResponse {
     NoLongerActive,
 }
 
+#[derive(Deserialize, Serialize)]
+pub enum AtProtoRequest {
+    /// User, Password
+    Login(String, String),
+    Logout,
+    Current,
+}
+
+/// Data returned by com.atproto.server.createSession xrpc calls.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AtProtoNewSession {
+    pub access_jwt: String,
+    pub refresh_jwt: String,
+    pub handle: String,
+    pub did: String,
+    pub email: String,
+    pub email_confirmed: bool,
+    pub email_auth_factor: bool,
+    pub active: bool,
+    pub status: Option<String>,
+}
+
+/// Error data for atproto calls that return a 400 error.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+pub enum AtProtoErrorKind {
+    InvalidRequest,
+    ExpiredToken,
+    InvalidToken,
+    AccountTakedown,
+    AuthFactorTokenRequired,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct AtProtoError {
+    pub error: AtProtoErrorKind,
+    pub message: String,
+}
+
+/// Data returned by com.atproto.server.getSession xrpc calls.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AtProtoCurrentSession {
+    pub handle: String,
+    pub did: String,
+    pub email: String,
+    pub email_confirmed: bool,
+    pub email_auth_factor: bool,
+    pub active: bool,
+    pub status: Option<String>,
+}
+
+/// Data returned by com.atproto.server.refreshSession xrpc calls.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AtProtoRefreshSession {
+    pub access_jwt: String,
+    pub refresh_jwt: String,
+    pub handle: String,
+    pub did: String,
+    pub active: bool,
+    pub status: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub enum AtProtoResult {
+    NewSession(AtProtoNewSession, ServoUrl), // (session, endpoint_url)
+    CurrentSession(AtProtoCurrentSession),
+    RefreshRequired,
+    Logout, // For Logout success
+    Error,
+}
+
 /// Messages from the script to the constellation.
 #[derive(Deserialize, IntoStaticStr, Serialize)]
 pub enum ScriptToConstellationMessage {
@@ -714,6 +787,8 @@ pub enum ScriptToConstellationMessage {
     ForwardKeyboardScroll(PipelineId, KeyboardScroll),
     /// Notify the Constellation of the screenshot readiness of a given pipeline.
     RespondToScreenshotReadinessRequest(ScreenshotReadinessResponse),
+    /// ATProto api message.
+    AtProto(AtProtoRequest, IpcSender<AtProtoResult>),
 }
 
 impl fmt::Debug for ScriptToConstellationMessage {

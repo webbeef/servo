@@ -4,6 +4,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::iter::FromIterator;
+use std::path::PathBuf;
 use std::sync::Arc as StdArc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -18,7 +19,7 @@ use devtools_traits::{
 };
 use embedder_traits::{AuthenticationResponse, EmbedderMsg, EmbedderProxy};
 use futures::{TryFutureExt, TryStreamExt, future};
-use headers::authorization::Basic;
+use headers::authorization::{Basic, Bearer};
 use headers::{
     AccessControlAllowCredentials, AccessControlAllowHeaders, AccessControlAllowMethods,
     AccessControlAllowOrigin, AccessControlMaxAge, AccessControlRequestMethod, Authorization,
@@ -54,9 +55,9 @@ use net_traits::request::{
 };
 use net_traits::response::{CacheState, HttpsState, Response, ResponseBody, ResponseType};
 use net_traits::{
-    CookieSource, DOCUMENT_ACCEPT_HEADER_VALUE, DebugVec, FetchMetadata, NetworkError,
-    RedirectEndValue, RedirectStartValue, ReferrerPolicy, ResourceAttribute, ResourceFetchTiming,
-    ResourceTimeValue,
+    AtProtoSessionState, AuthCacheEntry, BasicAuthCacheEntry, BearerAuthCacheEntry, CookieSource,
+    DOCUMENT_ACCEPT_HEADER_VALUE, DebugVec, FetchMetadata, NetworkError, RedirectEndValue,
+    RedirectStartValue, ReferrerPolicy, ResourceAttribute, ResourceFetchTiming, ResourceTimeValue,
 };
 use parking_lot::{Condvar, Mutex, RwLock};
 use profile_traits::mem::{Report, ReportKind};
@@ -81,7 +82,7 @@ use crate::fetch::headers::{SecFetchDest, SecFetchMode, SecFetchSite, SecFetchUs
 use crate::fetch::methods::{Data, DoneChannel, FetchContext, Target, main_fetch};
 use crate::hsts::HstsList;
 use crate::http_cache::{CacheKey, HttpCache};
-use crate::resource_thread::{AuthCache, AuthCacheEntry};
+use crate::resource_thread::AuthCache;
 use crate::websocket_loader::start_websocket;
 
 /// The various states an entry of the HttpCache can be in.
@@ -98,6 +99,7 @@ pub enum HttpCacheEntryState {
 type HttpCacheState = Mutex<HashMap<CacheKey, Arc<(Mutex<HttpCacheEntryState>, Condvar)>>>;
 
 pub struct HttpState {
+    pub config_dir: Option<PathBuf>,
     pub hsts_list: RwLock<HstsList>,
     pub cookie_jar: RwLock<CookieStorage>,
     pub http_cache: RwLock<HttpCache>,
@@ -110,9 +112,40 @@ pub struct HttpState {
     pub client: ServoClient,
     pub override_manager: CertificateErrorOverrideManager,
     pub embedder_proxy: Mutex<EmbedderProxy>,
+    pub atproto_session: RwLock<Option<AtProtoSessionState>>,
 }
 
 impl HttpState {
+    pub(crate) fn update_atproto_session(&self, session: Option<AtProtoSessionState>) {
+        let mut atproto_session = self.atproto_session.write();
+        let current_endpoint = atproto_session.clone().map(|s| s.endpoint);
+        *atproto_session = session.clone();
+        if let Some(ref session) = session {
+            if let Some(config_dir) = &self.config_dir {
+                session.save(config_dir);
+            }
+        } else if let Some(config_dir) = &self.config_dir {
+            AtProtoSessionState::reset(config_dir);
+        }
+
+        if let Some(session) = session {
+            let mut auth_cache = self.auth_cache.write();
+            let origin = session.endpoint.origin().ascii_serialization();
+            auth_cache.entries.insert(
+                origin,
+                AuthCacheEntry::Bearer(BearerAuthCacheEntry {
+                    token: session.access_jwt.clone(),
+                }),
+            );
+        } else if let Some(endpoint) = current_endpoint {
+            let mut auth_cache = self.auth_cache.write();
+            let origin = endpoint.origin().ascii_serialization();
+            auth_cache.entries.remove(&origin);
+        } else {
+            error!("Failed to remove Bearer auth entry");
+        }
+    }
+
     pub(crate) fn memory_reports(&self, suffix: &str, ops: &mut MallocSizeOfOps) -> Vec<Report> {
         vec![
             Report {
@@ -547,14 +580,40 @@ pub fn send_early_httprequest_to_devtools(request: &Request, context: &FetchCont
     }
 }
 
+enum AuthCredential {
+    Basic(Authorization<Basic>),
+    Bearer(Authorization<Bearer>),
+}
+
+impl AuthCredential {
+    fn update_headers(self, headers: &mut HeaderMap) {
+        match self {
+            Self::Basic(auth) => headers.typed_insert(auth),
+            Self::Bearer(auth) => headers.typed_insert(auth),
+        }
+    }
+}
+
 fn auth_from_cache(
     auth_cache: &RwLock<AuthCache>,
     origin: &ImmutableOrigin,
-) -> Option<Authorization<Basic>> {
+) -> Option<AuthCredential> {
     if let Some(auth_entry) = auth_cache.read().entries.get(&origin.ascii_serialization()) {
-        let user_name = &auth_entry.user_name;
-        let password = &auth_entry.password;
-        Some(Authorization::basic(user_name, password))
+        match auth_entry {
+            AuthCacheEntry::Basic(auth_entry) => {
+                let user_name = &auth_entry.user_name;
+                let password = &auth_entry.password;
+                Some(AuthCredential::Basic(Authorization::basic(
+                    user_name, password,
+                )))
+            },
+            AuthCacheEntry::Bearer(auth_entry) => {
+                let token = &auth_entry.token;
+                Some(AuthCredential::Bearer(
+                    Authorization::bearer(token).unwrap(),
+                ))
+            },
+        }
     } else {
         None
     }
@@ -1465,15 +1524,15 @@ async fn http_network_or_cache_fetch(
                 authorization_value.is_none() &&
                 has_credentials(&current_url)
             {
-                authorization_value = Some(Authorization::basic(
+                authorization_value = Some(AuthCredential::Basic(Authorization::basic(
                     current_url.username(),
                     current_url.password().unwrap_or(""),
-                ));
+                )));
             }
 
             // Substep 6
             if let Some(basic) = authorization_value {
-                http_request.headers.typed_insert(basic);
+                basic.update_headers(&mut http_request.headers);
             }
         }
     }
@@ -1655,14 +1714,14 @@ async fn http_network_or_cache_fetch(
         };
 
         // Store the credentials as a proxy-authentication entry.
-        let entry = AuthCacheEntry {
+        let entry = BasicAuthCacheEntry {
             user_name: credentials.username,
             password: credentials.password,
         };
         {
             let mut auth_cache = context.state.auth_cache.write();
             let key = request.current_url().origin().ascii_serialization();
-            auth_cache.entries.insert(key, entry);
+            auth_cache.entries.insert(key, AuthCacheEntry::Basic(entry));
         }
 
         // Make sure this is set to None,

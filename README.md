@@ -73,7 +73,7 @@ For more detailed build instructions, see the Servo book under [Setting up your 
   sudo $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager --install \
    "build-tools;34.0.0" \
    "emulator" \
-   "ndk;26.2.11394342" \
+   "ndk;28.2.13676358" \
    "platform-tools" \
    "platforms;android-33" \
    "system-images;android-33;google_apis;x86_64"

@@ -661,6 +661,10 @@ impl Document {
             return;
         }
 
+        if !self.is_active() {
+            return;
+        }
+
         let parent = match node.parent_in_flat_tree() {
             Some(parent) => parent,
             None => {
@@ -1030,6 +1034,10 @@ impl Document {
     }
 
     pub(crate) fn content_and_heritage_changed(&self, node: &Node) {
+        if !self.is_active() {
+            return;
+        }
+
         if node.is_connected() {
             node.note_dirty_descendants();
         }

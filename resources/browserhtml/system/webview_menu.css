@@ -1,0 +1,18 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+
+@import url(//system.localhost:8888/menu_shared.css);
+
+:host {
+  display: none;
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  z-index: var(--z-modal);
+}
+
+.menu {
+  position: absolute;
+  z-index: 1001;
+}

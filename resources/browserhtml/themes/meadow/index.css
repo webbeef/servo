@@ -1,0 +1,74 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+
+:root {
+  --font-family-base: ReadexPro;
+  --font-weight-normal: normal;
+  --font-weight-bold: 600;
+  --font-size-menu: 0.9em;
+  --font-size-sm: 0.85em;
+  --font-size-xs: 0.75em;
+
+  /* ===== Backgrounds ===== */
+  --bg-main: linear-gradient(
+    to bottom in oklab,
+    oklch(92% 0.03 220) 0%,
+    oklch(88% 0.08 140) 100%
+  );
+  --bg-header: oklch(65% 0.08 55);
+  --bg-footer: oklch(75% 0.08 180);
+  --bg-webview: oklch(97% 0.01 90);
+  --bg-menu: oklch(96% 0.02 130);
+  --bg-surface: oklch(97% 0.01 90);
+  --bg-hover: oklch(85% 0.05 140 / 0.3);
+  --bg-icon: oklch(88% 0.06 200);
+
+  /* ===== Colors - Text ===== */
+  --color-text-menu: oklch(35% 0.05 145);
+  --color-text: oklch(35% 0.05 145);
+  --color-text-secondary: oklch(45% 0.04 145);
+  --color-text-tertiary: oklch(55% 0.03 145);
+  --color-text-on-header: white;
+
+  /* ===== Colors - Interactive ===== */
+  --color-focus-ring: oklch(70% 0.15 300 / 0.5);
+  --color-resize-handle-hover: oklch(70% 0.12 140 / 0.4);
+  --color-primary: oklch(55% 0.12 220);
+  --color-danger: oklch(55% 0.15 25);
+
+  --color-menu-item-hover: oklch(85% 0.1 95 / 0.3);
+
+  /* ===== Colors - Borders ===== */
+  --color-border: oklch(70% 0.03 145 / 0.3);
+
+  /* ===== Colors - Shadow ===== */
+  --color-shadow: oklch(40% 0.02 60 / 0.2);
+  --color-shadow-menu: oklch(40% 0.02 60 / 0.25);
+  --color-backdrop: oklch(30% 0.02 60 / 0.5);
+
+  /* ===== Border Radius ===== */
+  --radius-sm: 0.6em;
+  --radius-md: 1.2em;
+  --radius-lg: 1.8em;
+
+  /* ===== Spacing ===== */
+  --spacing-xs: 0.25em;
+  --spacing-sm: 0.5em;
+  --spacing-md: 1em;
+  --spacing-lg: 1.5em;
+
+  /* ===== Sizes ===== */
+  --size-header-height: 2em;
+  --size-footer-height: 1.5em;
+  --size-icon: 1em;
+  --size-icon-sm: 1.25em;
+  --size-menu-width: 155px;
+  --size-panel-width: 320px;
+  --size-logo: 3em;
+  --size-notification-icon: 2em;
+
+  /* ===== Transitions ===== */
+  --transition-fast: 0.2s ease-out;
+
+  /* ===== Opacity ===== */
+  --opacity-muted: 0.6;
+}

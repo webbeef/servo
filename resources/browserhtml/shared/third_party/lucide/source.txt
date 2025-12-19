@@ -1,0 +1,3 @@
+https://lucide.dev/
+
+https://github.com/lucide-icons/lucide/tree/main/packages/lucide-static

@@ -370,6 +370,8 @@ impl WorkerGlobalScope {
                 gpu_id_hub,
                 init.inherited_secure_context,
                 init.unminify_js,
+                false, // is_embedded_webview - workers are never embedded webviews
+                false, // hide_focus - workers don't have focus
                 font_context,
             ),
             microtask_queue: runtime.microtask_queue.clone(),

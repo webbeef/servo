@@ -45,6 +45,11 @@ pub(crate) struct ConstellationWebView {
     /// The [`Theme`] that this [`ConstellationWebView`] uses. This is communicated to all
     /// `ScriptThread`s so that they know how to render the contents of a particular `WebView.
     theme: Theme,
+
+    /// Whether this webview should never receive focus (hidefocus attribute on the iframe).
+    /// When true, focus-related events are processed but focus is not transferred to
+    /// elements in this webview's documents.
+    pub hide_focus: bool,
 }
 
 impl ConstellationWebView {
@@ -52,6 +57,20 @@ impl ConstellationWebView {
         webview_id: WebViewId,
         focused_browsing_context_id: BrowsingContextId,
         user_content_manager_id: Option<UserContentManagerId>,
+    ) -> Self {
+        Self::new_with_hide_focus(
+            webview_id,
+            focused_browsing_context_id,
+            user_content_manager_id,
+            false,
+        )
+    }
+
+    pub(crate) fn new_with_hide_focus(
+        webview_id: WebViewId,
+        focused_browsing_context_id: BrowsingContextId,
+        user_content_manager_id: Option<UserContentManagerId>,
+        hide_focus: bool,
     ) -> Self {
         Self {
             webview_id,
@@ -61,6 +80,7 @@ impl ConstellationWebView {
             last_mouse_move_point: Default::default(),
             session_history: JointSessionHistory::new(),
             theme: Theme::Light,
+            hide_focus,
         }
     }
 
@@ -80,12 +100,41 @@ impl ConstellationWebView {
         event: &ConstellationInputEvent,
         browsing_contexts: &FxHashMap<BrowsingContextId, BrowsingContext>,
     ) -> Option<PipelineId> {
+        // For pointer events with coordinates (mouse, touch, wheel), we always route to
+        // the ROOT browsing context of this webview, not the focused one.
+        // This is because:
+        // 1. WebRender hit testing doesn't respect CSS z-index/stacking contexts
+        // 2. When an embedded webview is focused, we still want pointer events to go through
+        //    the parent's DOM hit testing first to respect z-index of overlays
+        // 3. The parent's DOM hit testing will forward events to embedded webviews if the
+        //    hit target is an embedded iframe element
+        //
+        // The root browsing context ID is the same as the webview ID (WebViewId wraps
+        // TopLevelBrowsingContextId which wraps BrowsingContextId).
+        let has_pointer_coordinates = matches!(
+            event.event.event,
+            InputEvent::MouseButton(_) |
+                InputEvent::MouseMove(_) |
+                InputEvent::Touch(_) |
+                InputEvent::Wheel(_)
+        );
+
+        if has_pointer_coordinates {
+            // Route to the root/parent browsing context of this webview
+            let root_browsing_context_id: BrowsingContextId = self.webview_id.into();
+            return Some(
+                browsing_contexts
+                    .get(&root_browsing_context_id)?
+                    .pipeline_id,
+            );
+        }
+
+        // For non-pointer events (keyboard, etc.), use hit test result if available
         if let Some(hit_test_result) = &event.hit_test_result {
             return Some(hit_test_result.pipeline_id);
         }
 
-        // If there's no hit test, send the event to either the hovered or focused browsing context,
-        // depending on the event type.
+        // Otherwise, send to either the hovered or focused browsing context
         let browsing_context_id = if matches!(event.event.event, InputEvent::MouseLeftViewport(_)) {
             self.hovered_browsing_context_id
                 .unwrap_or(self.focused_browsing_context_id)
@@ -155,11 +204,9 @@ impl ConstellationWebView {
 
         if let InputEvent::MouseMove(_) = &event.event.event {
             update_hovered_browsing_context(Some(pipeline.browsing_context_id), true);
-            self.last_mouse_move_point = event
-                .hit_test_result
-                .as_ref()
-                .expect("MouseMove events should always have hit tests.")
-                .point_in_viewport;
+            if let Some(ref hit_test_result) = event.hit_test_result {
+                self.last_mouse_move_point = hit_test_result.point_in_viewport;
+            }
         }
 
         let _ = pipeline

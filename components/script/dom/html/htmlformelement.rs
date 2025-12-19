@@ -857,8 +857,11 @@ impl HTMLFormElement {
 
         // Step 19
         let source = doc.browsing_context().unwrap();
-        let (maybe_chosen, _new) = source
-            .choose_browsing_context(target_attribute_value.unwrap_or(DOMString::new()), noopener);
+        let (maybe_chosen, _new) = source.choose_browsing_context(
+            target_attribute_value.unwrap_or(DOMString::new()),
+            noopener,
+            None,
+        );
 
         // Step 20
         let chosen = match maybe_chosen {

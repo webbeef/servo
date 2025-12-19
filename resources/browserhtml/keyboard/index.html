@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Virtual Keyboard</title>
+  <link rel="stylesheet" href="index.css" />
+</head>
+<body>
+  <div class="keyboard" id="keyboard">
+    <div class="row row-numbers">
+      <button class="key" data-key="1">1</button>
+      <button class="key" data-key="2">2</button>
+      <button class="key" data-key="3">3</button>
+      <button class="key" data-key="4">4</button>
+      <button class="key" data-key="5">5</button>
+      <button class="key" data-key="6">6</button>
+      <button class="key" data-key="7">7</button>
+      <button class="key" data-key="8">8</button>
+      <button class="key" data-key="9">9</button>
+      <button class="key" data-key="0">0</button>
+    </div>
+    <div class="row">
+      <button class="key" data-key="q">q</button>
+      <button class="key" data-key="w">w</button>
+      <button class="key" data-key="e">e</button>
+      <button class="key" data-key="r">r</button>
+      <button class="key" data-key="t">t</button>
+      <button class="key" data-key="y">y</button>
+      <button class="key" data-key="u">u</button>
+      <button class="key" data-key="i">i</button>
+      <button class="key" data-key="o">o</button>
+      <button class="key" data-key="p">p</button>
+    </div>
+    <div class="row">
+      <button class="key" data-key="a">a</button>
+      <button class="key" data-key="s">s</button>
+      <button class="key" data-key="d">d</button>
+      <button class="key" data-key="f">f</button>
+      <button class="key" data-key="g">g</button>
+      <button class="key" data-key="h">h</button>
+      <button class="key" data-key="j">j</button>
+      <button class="key" data-key="k">k</button>
+      <button class="key" data-key="l">l</button>
+    </div>
+    <div class="row">
+      <button class="key wide shift" data-action="shift">⇧</button>
+      <button class="key" data-key="z">z</button>
+      <button class="key" data-key="x">x</button>
+      <button class="key" data-key="c">c</button>
+      <button class="key" data-key="v">v</button>
+      <button class="key" data-key="b">b</button>
+      <button class="key" data-key="n">n</button>
+      <button class="key" data-key="m">m</button>
+      <button class="key wide" data-action="backspace">⌫</button>
+    </div>
+    <div class="row">
+      <button class="key extra-wide" data-action="symbols">123</button>
+      <button class="key" data-key=",">,</button>
+      <button class="key space" data-key=" ">space</button>
+      <button class="key" data-key=".">.</button>
+      <button class="key extra-wide" data-action="return">↵</button>
+    </div>
+  </div>
+
+  <script src="index.js"></script>
+</body>
+</html>

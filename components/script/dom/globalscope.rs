@@ -375,6 +375,16 @@ pub(crate) struct GlobalScope {
     /// Is considered in a secure context
     inherited_secure_context: Option<bool>,
 
+    /// Whether this global is for an embedded webview (iframe with embed attribute).
+    /// Used to route embedder control requests through the constellation instead of
+    /// directly to the embedder.
+    is_embedded_webview: bool,
+
+    /// Whether this global should never receive focus (hidefocus attribute on the iframe).
+    /// When true, focus-related events are processed but focus is not transferred to
+    /// elements in this document. No blur or focus events are fired.
+    hide_focus: bool,
+
     /// Directory to store unminified scripts for this window if unminify-js
     /// opt is enabled.
     unminified_js_dir: Option<String>,
@@ -775,6 +785,8 @@ impl GlobalScope {
         #[cfg(feature = "webgpu")] gpu_id_hub: Arc<IdentityHub>,
         inherited_secure_context: Option<bool>,
         unminify_js: bool,
+        is_embedded_webview: bool,
+        hide_focus: bool,
         font_context: Option<Arc<FontContext>>,
     ) -> Self {
         Self {
@@ -818,6 +830,8 @@ impl GlobalScope {
             console_group_stack: DomRefCell::new(Vec::new()),
             console_count_map: Default::default(),
             inherited_secure_context,
+            is_embedded_webview,
+            hide_focus,
             unminified_js_dir: unminify_js.then(|| unminified_path("unminified-js")),
             byte_length_queuing_strategy_size_function: OnceCell::new(),
             count_queuing_strategy_size_function: OnceCell::new(),
@@ -3120,6 +3134,16 @@ impl GlobalScope {
 
     pub(crate) fn inherited_secure_context(&self) -> Option<bool> {
         self.inherited_secure_context
+    }
+
+    /// Whether this global is for an embedded webview (iframe with embed attribute).
+    pub(crate) fn is_embedded_webview(&self) -> bool {
+        self.is_embedded_webview
+    }
+
+    /// Whether this global should never receive focus (hidefocus attribute on the iframe).
+    pub(crate) fn hide_focus(&self) -> bool {
+        self.hide_focus
     }
 
     /// <https://html.spec.whatwg.org/multipage/#secure-context>

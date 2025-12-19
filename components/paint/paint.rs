@@ -9,7 +9,7 @@ use std::fs::create_dir_all;
 use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use base::generic_channel::{self, GenericSender, RoutedReceiver};
+use base::generic_channel::{self, GenericCallback, GenericSender, RoutedReceiver};
 use base::id::{PainterId, PipelineId, WebViewId};
 use bitflags::bitflags;
 use canvas_traits::webgl::{WebGLContextId, WebGLThreads};
@@ -17,7 +17,8 @@ use constellation_traits::EmbedderToConstellationMessage;
 use crossbeam_channel::Sender;
 use dpi::PhysicalSize;
 use embedder_traits::{
-    EventLoopWaker, InputEventAndId, InputEventId, InputEventResult, ScreenshotCaptureError,
+    EmbeddedWebViewScreenshotError, EmbeddedWebViewScreenshotResult, EventLoopWaker,
+    InputEventAndId, InputEventId, InputEventResult, ScreenshotCaptureError, ScreenshotImageType,
     Scroll, ShutdownState, ViewportDetails, WebViewPoint, WebViewRect,
 };
 use euclid::{Scale, Size2D};
@@ -44,7 +45,7 @@ use webgl::webgl_thread::WebGLContextBusyMap;
 #[cfg(feature = "webgpu")]
 use webgpu::canvas_context::WebGpuExternalImageMap;
 use webrender::{CaptureBits, MemoryReport};
-use webrender_api::units::{DevicePixel, DevicePoint};
+use webrender_api::units::{DeviceIntRect, DevicePixel, DevicePoint, DeviceRect};
 use webrender_api::{FontInstanceKey, FontKey, ImageKey};
 
 use crate::InitialPaintState;
@@ -135,6 +136,11 @@ pub struct Paint {
     /// An map of external images shared between all `WebGpuExternalImages`.
     #[cfg(feature = "webgpu")]
     webgpu_image_map: std::cell::OnceCell<WebGpuExternalImageMap>,
+
+    /// Tracks the rects of embedded webviews within their parent webviews.
+    /// Maps parent WebViewId to a map of embedded WebViewId to rect.
+    /// This is used to forward input events to embedded webviews.
+    embedded_webview_rects: RefCell<HashMap<WebViewId, HashMap<WebViewId, DeviceRect>>>,
 }
 
 /// Why we need to be repainted. This is used for debugging.
@@ -212,6 +218,7 @@ impl Paint {
             webxr_main_thread: RefCell::new(webxr_main_thread),
             #[cfg(feature = "webgpu")]
             webgpu_image_map: Default::default(),
+            embedded_webview_rects: Default::default(),
         }))
     }
 
@@ -537,6 +544,92 @@ impl Paint {
                     painter.append_lcp_candidate(lcp_candidate, webview_id, pipeline_id, epoch);
                 }
             },
+            PaintMessage::UpdateEmbeddedWebViewRect {
+                embedded_webview_id,
+                parent_webview_id,
+                rect,
+            } => {
+                debug!(
+                    "UpdateEmbeddedWebViewRect: embedded={:?}, parent={:?}, rect={:?}",
+                    embedded_webview_id, parent_webview_id, rect
+                );
+                // Store the rect for input event routing (to transform coordinates)
+                self.embedded_webview_rects
+                    .borrow_mut()
+                    .entry(parent_webview_id)
+                    .or_default()
+                    .insert(embedded_webview_id, rect);
+
+                // Update the embedded WebViewRenderer's rect so it's positioned correctly
+                // in the shared WebRender display list. The embedded webview shares the same
+                // Painter/RenderingContext as the parent, so its content must be positioned
+                // at the iframe's location for both rendering and hit testing to work.
+                if let Some(mut painter) = self.maybe_painter_mut(parent_webview_id.into()) {
+                    // Register this as an embedded webview so it won't be rendered as a
+                    // top-level iframe in the root display list.
+                    painter.register_embedded_webview(embedded_webview_id);
+                    if let Some(webview_renderer) =
+                        painter.webview_renderer_mut(embedded_webview_id)
+                    {
+                        if webview_renderer.set_rect(rect) {
+                            // Rect changed, need to rebuild the display list
+                            painter.send_root_pipeline_display_list();
+                        }
+                    }
+                }
+            },
+            PaintMessage::RemoveEmbeddedWebView(embedded_webview_id) => {
+                // Remove from all parent webviews
+                for embedded_map in self.embedded_webview_rects.borrow_mut().values_mut() {
+                    embedded_map.remove(&embedded_webview_id);
+                }
+                // Also unregister from all painters
+                for painter in self.painters.iter() {
+                    painter
+                        .borrow_mut()
+                        .unregister_embedded_webview(embedded_webview_id);
+                }
+            },
+            PaintMessage::SetEmbeddedWebViewHidden {
+                embedded_webview_id,
+                parent_webview_id,
+                hidden,
+            } => {
+                debug!(
+                    "SetEmbeddedWebViewHidden: embedded={:?}, parent={:?}, hidden={:?}",
+                    embedded_webview_id, parent_webview_id, hidden
+                );
+                // Update the embedded WebViewRenderer's hidden state
+                if let Some(mut painter) = self.maybe_painter_mut(parent_webview_id.into()) {
+                    if let Some(webview_renderer) =
+                        painter.webview_renderer_mut(embedded_webview_id)
+                    {
+                        if webview_renderer.set_hidden(hidden) {
+                            // Hidden state changed, need to rebuild the display list
+                            painter.send_root_pipeline_display_list();
+                        }
+                    }
+                }
+            },
+            PaintMessage::TakeEncodedScreenshot(webview_id, request, response_sender) => {
+                self.handle_take_encoded_screenshot(webview_id, request, response_sender);
+            },
+            PaintMessage::ForwardInputEventToEmbeddedWebView(embedded_webview_id, event) => {
+                // Forward the input event directly to the embedded webview's painter.
+                // This is called from the Constellation after the parent webview's script
+                // thread determined via DOM hit testing that the event target is an embedded
+                // iframe element.
+                //
+                // No coordinate transformation is needed here because:
+                // - Page zoom is included in hidpi_scale_factor, so layout uses zoomed coordinates
+                // - The visual zoom transform scales the display list to match
+                // - Event coordinates from the parent are already in the correct space
+                self.painter_mut(embedded_webview_id.into())
+                    .notify_input_event(embedded_webview_id, event);
+            },
+            PaintMessage::SetPageZoom(webview_id, zoom) => {
+                self.set_page_zoom(webview_id, zoom);
+            },
         }
     }
 
@@ -592,6 +685,152 @@ impl Paint {
         });
 
         sender.send(ProcessReports::new(reports));
+    }
+
+    /// Handle a request to take an encoded screenshot of an embedded webview.
+    fn handle_take_encoded_screenshot(
+        &self,
+        webview_id: WebViewId,
+        request: embedder_traits::EmbeddedWebViewScreenshotRequest,
+        response_sender: GenericCallback<
+            Result<
+                embedder_traits::EmbeddedWebViewScreenshotResult,
+                embedder_traits::EmbeddedWebViewScreenshotError,
+            >,
+        >,
+    ) {
+        // Get the painter for this webview
+        let Some(painter) = self.maybe_painter(webview_id.into()) else {
+            let _ = response_sender.send(Err(EmbeddedWebViewScreenshotError::WebViewDoesNotExist));
+            return;
+        };
+
+        // Make the rendering context current
+        if let Err(error) = painter.rendering_context.make_current() {
+            warn!("Failed to make the rendering context current: {error:?}");
+            let _ = response_sender.send(Err(EmbeddedWebViewScreenshotError::CaptureFailed));
+            return;
+        }
+
+        // For embedded webviews, look up the rect from embedded_webview_rects
+        // which contains the correct iframe dimensions (not the full rendering context size).
+        // The map is parent_webview_id -> (embedded_webview_id -> rect).
+        let device_rect = self
+            .embedded_webview_rects
+            .borrow()
+            .values()
+            .find_map(|embedded_map| embedded_map.get(&webview_id).copied());
+
+        let Some(device_rect) = device_rect else {
+            warn!("Could not find embedded webview rect for {:?}", webview_id);
+            let _ = response_sender.send(Err(EmbeddedWebViewScreenshotError::WebViewDoesNotExist));
+            return;
+        };
+
+        // Validate dimensions
+        let width = device_rect.width();
+        let height = device_rect.height();
+        if width <= 0.0 || height <= 0.0 {
+            warn!(
+                "Invalid embedded webview rect dimensions: {:?}",
+                device_rect
+            );
+            let _ = response_sender.send(Err(EmbeddedWebViewScreenshotError::CaptureFailed));
+            return;
+        }
+
+        // The embedded webview shares the parent's rendering context, so we need to
+        // capture from the iframe's actual position in the shared framebuffer.
+        //
+        // The device_rect uses screen coordinates (top-left origin at (0,0)):
+        //   - min.y is the top of the iframe
+        //   - max.y is the bottom of the iframe
+        //
+        // OpenGL's read_pixels uses bottom-left origin, so we need to transform.
+        // In OpenGL coords, the bottom of the screen is y=0.
+        //
+        // To capture the iframe, we need:
+        //   gl_y = rendering_context_height - device_rect.max.y
+        //        = distance from bottom of screen to bottom of iframe
+        //
+        // This gives us the correct starting Y for read_pixels.
+        let rendering_context_height = painter.rendering_context.size2d().height as f32;
+        let rendering_context_width = painter.rendering_context.size2d().width as f32;
+        let gl_y = rendering_context_height - device_rect.max.y;
+
+        // Clamp coordinates to valid screen bounds to prevent negative values
+        // that would cause crashes in to_usize() conversion
+        let gl_x = (device_rect.min.x as i32).max(0);
+        let gl_y = (gl_y as i32).max(0);
+
+        // Also clamp width/height to not exceed screen bounds
+        let max_width = (rendering_context_width as i32 - gl_x).max(0);
+        let max_height = (rendering_context_height as i32 - gl_y).max(0);
+        let clamped_width = (width as i32).min(max_width);
+        let clamped_height = (height as i32).min(max_height);
+
+        // If the clamped dimensions are zero or negative, we can't capture
+        if clamped_width <= 0 || clamped_height <= 0 {
+            warn!(
+                "Embedded webview {:?} has no visible area to capture (clamped to {}x{})",
+                webview_id, clamped_width, clamped_height
+            );
+            let _ = response_sender.send(Err(EmbeddedWebViewScreenshotError::CaptureFailed));
+            return;
+        }
+
+        let viewport_rect = DeviceIntRect::from_origin_and_size(
+            euclid::Point2D::new(gl_x, gl_y),
+            euclid::Size2D::new(clamped_width, clamped_height),
+        );
+
+        debug!(
+            "Taking screenshot of embedded webview {:?}: device_rect={:?}, rendering_context_height={}, gl_y={}, capture_rect={:?}",
+            webview_id, device_rect, rendering_context_height, gl_y, viewport_rect
+        );
+
+        // Capture the screenshot as an RgbaImage
+        let rgba_image = match painter.rendering_context.read_to_image(viewport_rect) {
+            Some(image) => image,
+            None => {
+                let _ = response_sender.send(Err(EmbeddedWebViewScreenshotError::CaptureFailed));
+                return;
+            },
+        };
+
+        // Create a Snapshot from the RgbaImage for encoding
+        let (width, height) = rgba_image.dimensions();
+        let mut snapshot = pixels::Snapshot::from_vec(
+            euclid::Size2D::new(width, height),
+            pixels::SnapshotPixelFormat::RGBA,
+            pixels::SnapshotAlphaMode::Transparent {
+                premultiplied: false,
+            },
+            rgba_image.into_raw(),
+        );
+
+        // Convert our image type to the pixels crate's type
+        let image_type = match request.image_type {
+            ScreenshotImageType::Png => pixels::EncodedImageType::Png,
+            ScreenshotImageType::Jpeg => pixels::EncodedImageType::Jpeg,
+            ScreenshotImageType::Webp => pixels::EncodedImageType::Webp,
+        };
+
+        // Encode the image
+        let mut buffer = Vec::new();
+        match snapshot.encode_for_mime_type(&image_type, Some(request.quality), &mut buffer) {
+            Ok(()) => {
+                let result = EmbeddedWebViewScreenshotResult {
+                    bytes: buffer,
+                    mime_type: request.image_type.mime_type().to_string(),
+                };
+                let _ = response_sender.send(Ok(result));
+            },
+            Err(error) => {
+                warn!("Failed to encode screenshot: {error:?}");
+                let _ = response_sender.send(Err(EmbeddedWebViewScreenshotError::EncodingFailed));
+            },
+        }
     }
 
     /// Handle messages sent to `Paint` during the shutdown process. In general,
@@ -738,8 +977,35 @@ impl Paint {
         #[cfg(feature = "webxr")]
         self.webxr_main_thread.borrow_mut().run_one_frame();
 
+        // Collect all unconsumed scroll events from embedded webviews
+        let mut all_unconsumed_scrolls = Vec::new();
         for painter in &self.painters {
-            painter.borrow_mut().perform_updates();
+            let unconsumed = painter.borrow_mut().perform_updates();
+            all_unconsumed_scrolls.extend(unconsumed);
+        }
+
+        // Forward unconsumed scroll events to parent webviews.
+        for (embedded_webview_id, scroll_event) in all_unconsumed_scrolls {
+            // Find the parent webview for this embedded webview
+            let parent_webview_id = self.embedded_webview_rects.borrow().iter().find_map(
+                |(parent_id, embedded_map)| {
+                    if embedded_map.contains_key(&embedded_webview_id) {
+                        Some(*parent_id)
+                    } else {
+                        None
+                    }
+                },
+            );
+
+            if let Some(parent_id) = parent_webview_id {
+                if let Some(mut painter) = self.maybe_painter_mut(parent_id.into()) {
+                    // Try to scroll any scrollable node in the parent document.
+                    // We skip hit-testing because the iframe_rect is in layout coordinates,
+                    // not visual coordinates (post-scroll transform), so hit-testing
+                    // at that position doesn't work correctly after the parent has scrolled.
+                    painter.try_scroll_any_and_send_to_webrender(parent_id, scroll_event.scroll);
+                }
+            }
         }
 
         self.shutdown_state() != ShutdownState::FinishedShuttingDown
@@ -781,6 +1047,10 @@ impl Paint {
         if self.shutdown_state() != ShutdownState::NotShuttingDown {
             return;
         }
+
+        // Always send the event to the parent webview. DOM hit testing in the script
+        // thread will determine if the event should be forwarded to an embedded webview.
+        // This respects the parent document's stacking context and z-index rules.
         self.painter_mut(webview_id.into())
             .notify_input_event(webview_id, event);
     }
@@ -789,6 +1059,53 @@ impl Paint {
         if self.shutdown_state() != ShutdownState::NotShuttingDown {
             return;
         }
+
+        // Check if this event should be forwarded to an embedded webview.
+        let scale = self.device_pixels_per_page_pixel(webview_id);
+        let device_point = point.as_device_point(scale);
+
+        // First, find candidate embedded webviews that contain the point
+        let candidate_ids: Vec<WebViewId> = self
+            .embedded_webview_rects
+            .borrow()
+            .get(&webview_id)
+            .map(|embedded_map| {
+                embedded_map
+                    .iter()
+                    .filter(|(_, rect)| rect.contains(device_point))
+                    .map(|(id, _)| *id)
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        // Then check which one is visible (not hidden)
+        for embedded_id in candidate_ids {
+            let is_visible = self
+                .maybe_painter(webview_id.into())
+                .map(|painter| {
+                    painter
+                        .webview_renderer(embedded_id)
+                        .is_some_and(|renderer| !renderer.hidden())
+                })
+                .unwrap_or(false);
+
+            if is_visible {
+                // Try to scroll the embedded webview first. If it consumes the scroll
+                // (i.e., has scrollable content that was scrolled), we're done.
+                // Otherwise, fall through to let the parent webview handle the scroll.
+                let consumed = self.painter_mut(embedded_id.into()).try_scroll_at_point(
+                    embedded_id,
+                    scroll,
+                    point,
+                );
+
+                if consumed {
+                    return;
+                }
+                // Fall through to parent if embedded didn't consume the scroll
+            }
+        }
+
         self.painter_mut(webview_id.into())
             .notify_scroll_event(webview_id, scroll, point);
     }

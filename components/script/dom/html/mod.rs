@@ -21,6 +21,7 @@ pub(crate) mod htmldivelement;
 pub(crate) mod htmldlistelement;
 pub(crate) mod htmldocument;
 pub(crate) mod htmlelement;
+pub(crate) mod htmlembeddedwebview;
 pub(crate) mod htmlembedelement;
 pub(crate) mod htmlfieldsetelement;
 pub(crate) mod htmlfontelement;

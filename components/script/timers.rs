@@ -31,6 +31,7 @@ use crate::dom::bindings::root::{AsHandleValue, Dom};
 use crate::dom::bindings::str::DOMString;
 use crate::dom::csp::CspReporting;
 use crate::dom::document::RefreshRedirectDue;
+use crate::dom::document_event_handler::LongPressContextMenuCallback;
 use crate::dom::eventsource::EventSourceTimeoutCallback;
 use crate::dom::globalscope::{ErrorReporting, GlobalScope, RethrowErrors};
 #[cfg(feature = "testbinding")]
@@ -126,6 +127,7 @@ pub(crate) enum OneshotTimerCallback {
     #[cfg(feature = "testbinding")]
     TestBindingCallback(TestBindingCallback),
     RefreshRedirectDue(RefreshRedirectDue),
+    LongPressContextMenu(LongPressContextMenuCallback),
     /// <https://html.spec.whatwg.org/multipage/#run-steps-after-a-timeout>
     RunStepsAfterTimeout {
         /// Step 1. timerKey
@@ -150,6 +152,7 @@ impl OneshotTimerCallback {
             #[cfg(feature = "testbinding")]
             OneshotTimerCallback::TestBindingCallback(callback) => callback.invoke(),
             OneshotTimerCallback::RefreshRedirectDue(callback) => callback.invoke(can_gc),
+            OneshotTimerCallback::LongPressContextMenu(callback) => callback.invoke(can_gc),
             OneshotTimerCallback::RunStepsAfterTimeout { completion, .. } => {
                 // <https://html.spec.whatwg.org/multipage/#run-steps-after-a-timeout>
                 // Step 4.4 Perform completionSteps.

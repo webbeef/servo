@@ -16,13 +16,14 @@ use std::fmt;
 use std::time::Duration;
 
 use base::cross_process_instant::CrossProcessInstant;
-use base::generic_channel::GenericCallback;
+use base::generic_channel::{GenericCallback, GenericSharedMemory};
 use base::id::{MessagePortId, PipelineId, ScriptEventLoopId, WebViewId};
 use embedder_traits::user_contents::{UserContentManagerId, UserScript};
 use embedder_traits::{
-    EmbedderControlId, EmbedderControlResponse, InputEventAndId, JavaScriptEvaluationId,
-    MediaSessionActionType, NewWebViewDetails, PaintHitTestResult, Theme, TraversalId,
-    ViewportDetails, WebDriverCommandMsg,
+    EmbedderControlId, EmbedderControlRequest, EmbedderControlResponse, InputEventAndId,
+    JavaScriptEvaluationId, LoadStatus, MediaSessionActionType, NewWebViewDetails, Notification,
+    PaintHitTestResult, ServoErrorType, SimpleDialogRequest, Theme, TraversalId, ViewportDetails,
+    WebDriverCommandMsg,
 };
 pub use from_script_message::*;
 use malloc_size_of_derive::MallocSizeOf;
@@ -35,8 +36,69 @@ use servo_config::prefs::PrefValue;
 use servo_url::{ImmutableOrigin, ServoUrl};
 pub use structured_data::*;
 use strum::IntoStaticStr;
-use webrender_api::units::LayoutVector2D;
+use webrender_api::units::{DeviceIntRect, LayoutVector2D};
 use webrender_api::{ExternalScrollId, ImageKey};
+
+/// Event types that are dispatched from embedded webviews to their parent iframe elements.
+/// These are used to notify the parent document about changes in the embedded webview's state.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub enum EmbeddedWebViewEventType {
+    /// The URL of the embedded webview changed.
+    UrlChanged(ServoUrl),
+    /// The page title of the embedded webview changed.
+    TitleChanged(Option<String>),
+    /// The load status of the embedded webview changed.
+    LoadStatusChanged(LoadStatus),
+    /// The favicon of the embedded webview changed.
+    FaviconChanged {
+        /// The favicon image bytes.
+        bytes: GenericSharedMemory,
+        /// The width of the favicon image.
+        width: u32,
+        /// The height of the favicon image.
+        height: u32,
+    },
+    /// The embedded webview was closed.
+    Closed,
+    /// The history changed with full history list and current index.
+    HistoryChanged(Vec<ServoUrl>, usize),
+    /// A history traversal completed.
+    HistoryTraversalComplete(TraversalId),
+    /// The meta=theme-color element changed value.
+    ThemeColorChanged(String),
+    /// The embedded webview received input (mouse/touch).
+    InputReceived,
+    /// An embedder control (select, color picker, etc.) should be shown.
+    EmbedderControlShow {
+        /// Unique ID for response routing.
+        id: EmbedderControlId,
+        /// Bounding rect in device pixels.
+        rect: DeviceIntRect,
+        /// The control request details.
+        request: EmbedderControlRequest,
+    },
+    /// An embedder control should be hidden.
+    EmbedderControlHide {
+        /// The ID of the control to hide.
+        id: EmbedderControlId,
+    },
+    /// A simple dialog (alert, confirm, prompt) should be shown.
+    /// The request includes an IPC sender for direct response.
+    SimpleDialogShow(SimpleDialogRequest),
+    /// A notification should be shown to the user.
+    NotificationShow(Notification),
+}
+
+/// The type of simple dialog to show.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub enum SimpleDialogType {
+    /// An alert dialog that only has an "OK" button.
+    Alert,
+    /// A confirm dialog with "OK" and "Cancel" buttons.
+    Confirm,
+    /// A prompt dialog with a text input, "OK" and "Cancel" buttons.
+    Prompt,
+}
 
 /// Messages to the Constellation from the embedding layer, whether from `ServoRenderer` or
 /// from `libservo` itself.
@@ -115,6 +177,9 @@ pub enum EmbedderToConstellationMessage {
     UserContentManagerAction(UserContentManagerId, UserContentManagerAction),
     /// Update pinch zoom details stored in the top level window
     UpdatePinchZoomInfos(PipelineId, PinchZoomInfos),
+    /// Notify all script threads about a Servo error, so they can dispatch `servoerror` events
+    /// to all `navigator.embedder` instances.
+    NotifyServoError(ServoErrorType, String),
 }
 
 pub enum UserContentManagerAction {

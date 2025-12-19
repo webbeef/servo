@@ -1,0 +1,76 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+
+:root {
+  /* ===== Typography ===== */
+  --font-family-base: ReadexPro;
+  --font-weight-normal: normal;
+  --font-weight-bold: bolder;
+  --font-size-menu: 0.9em;
+  --font-size-sm: 0.85em;
+  --font-size-xs: 0.75em;
+
+  /* ===== Backgrounds ===== */
+  --bg-main: linear-gradient(
+    to bottom right in oklab,
+    oklch(95% 0.5 110) 0%,
+    oklch(72% 0.5 90) 100%
+  );
+  --bg-header: oklch(95% 0.5 110);
+  --bg-footer: oklch(72% 0.5 90);
+  --bg-webview: white;
+  --bg-menu: white;
+  --bg-surface: white;
+  --bg-hover: rgba(0, 0, 0, 0.05);
+  --bg-icon: oklch(92% 0.05 220);
+
+  /* ===== Colors - Text ===== */
+  --color-text-menu: black;
+  --color-text: black;
+  --color-text-secondary: oklch(45% 0 0);
+  --color-text-tertiary: oklch(60% 0 0);
+  /* Contrast text for use on header/primary backgrounds */
+  --color-text-on-header: white;
+
+  /* ===== Colors - Interactive ===== */
+  --color-focus-ring: rgba(0, 120, 255, 0.5);
+  --color-resize-handle-hover: rgba(0, 120, 255, 0.3);
+  --color-primary: oklch(55% 0.2 250);
+  --color-danger: oklch(55% 0.2 25);
+
+  --color-menu-item-hover: rgba(0, 0, 0, 0.1);
+
+  /* ===== Colors - Borders ===== */
+  --color-border: rgba(0, 0, 0, 0.15);
+
+  /* ===== Colors - Shadow ===== */
+  --color-shadow: rgba(0, 0, 0, 0.3);
+  --color-shadow-menu: rgba(0, 0, 0, 0.2);
+  --color-backdrop: rgba(0, 0, 0, 0.5);
+
+  /* ===== Border Radius ===== */
+  --radius-sm: 0.5em;
+  --radius-md: 1em;
+  --radius-lg: 1.5em;
+
+  /* ===== Spacing ===== */
+  --spacing-xs: 0.25em;
+  --spacing-sm: 0.5em;
+  --spacing-md: 1em;
+  --spacing-lg: 1.5em;
+
+  /* ===== Sizes ===== */
+  --size-header-height: 2em;
+  --size-footer-height: 1.5em;
+  --size-icon: 1em;
+  --size-icon-sm: 1.25em;
+  --size-menu-width: 150px;
+  --size-panel-width: 320px;
+  --size-logo: 3em;
+  --size-notification-icon: 2em;
+
+  /* ===== Transitions ===== */
+  --transition-fast: 0.15s ease;
+
+  /* ===== Opacity ===== */
+  --opacity-muted: 0.6;
+}

@@ -68,6 +68,9 @@ impl HTMLMetaElement {
             if name == "viewport" {
                 self.parse_and_send_viewport_if_necessary();
             }
+            if name == "theme-color" {
+                self.parse_and_send_theme_color();
+            }
         // https://html.spec.whatwg.org/multipage/#attr-meta-http-equiv
         } else if !self.HttpEquiv().is_empty() {
             // TODO: Implement additional http-equiv candidates
@@ -88,6 +91,23 @@ impl HTMLMetaElement {
             if name == "referrer" {
                 self.apply_referrer();
             }
+        }
+    }
+
+    fn parse_and_send_theme_color(&self) {
+        let window = self.owner_window();
+        if !window.is_top_level() {
+            return;
+        }
+
+        if let Some(content) = self
+            .upcast::<Element>()
+            .get_attribute(&ns!(), &local_name!("content"))
+            .filter(|attr| !attr.value().is_empty())
+        {
+            // Store the theme color on the document, which will notify the parent
+            self.owner_document()
+                .set_theme_color(content.value().to_string());
         }
     }
 

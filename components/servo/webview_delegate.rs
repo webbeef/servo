@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use base::generic_channel::GenericSender;
-use base::id::PipelineId;
+use base::id::{BrowsingContextId, PipelineId, WebViewId};
 use constellation_traits::EmbedderToConstellationMessage;
 #[cfg(feature = "gamepad")]
 use embedder_traits::GamepadHapticEffectType;
@@ -917,6 +917,14 @@ pub trait WebViewDelegate {
     ///
     /// [`window.open`]: https://developer.mozilla.org/en-US/docs/Web/API/Window/open
     fn request_create_new(&self, _parent_webview: WebView, _: CreateNewWebViewRequest) {}
+    /// This method is called when an iframe with the "embed" attribute requests to create
+    /// an embedded webview. Unlike `request_create_new`, embedded webviews should NOT
+    /// create new tabs in the UI - they are displayed within the iframe element itself.
+    ///
+    /// The embedder should create the webview using the SAME rendering context as the parent
+    /// webview (so they share the same compositor). The webview content will be
+    /// composited within the parent's rendering context at the iframe's position.
+    fn request_create_embedded(&self, _parent_webview: WebView, _: CreateNewWebViewRequest) {}
     /// Content in a [`WebView`] is requesting permission to access a feature requiring
     /// permission from the user. The embedder should allow or deny the request, either by
     /// reading a cached value or querying the user for permission via the user interface.
@@ -989,6 +997,25 @@ pub trait WebViewDelegate {
         &self,
         _webview: WebView,
         _tree_update: accesskit::TreeUpdate,
+    ) {
+    }
+
+    /// Notifies the embedder that an embedded webview has opened a new embedded webview
+    /// via `window.open()` or `target="_blank"` links.
+    ///
+    /// The constellation has already created the new webview and pipeline. The parent webview
+    /// should create an `<iframe embed>` that adopts the pre-created webview using the provided IDs.
+    /// The iframe should set:
+    /// - `adopt-webview-id` attribute to the new_webview_id
+    /// - `adopt-browsing-context-id` attribute to the new_browsing_context_id
+    /// - `adopt-pipeline-id` attribute to the new_pipeline_id
+    fn notify_embedded_webview_created(
+        &self,
+        _parent_webview: WebView,
+        _new_webview_id: WebViewId,
+        _new_browsing_context_id: BrowsingContextId,
+        _new_pipeline_id: PipelineId,
+        _url: Url,
     ) {
     }
 }

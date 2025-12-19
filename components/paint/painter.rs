@@ -3,6 +3,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use std::cell::Cell;
+use std::collections::BTreeMap;
 use std::collections::hash_map::Entry;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -81,7 +82,14 @@ pub(crate) struct Painter {
     pub(crate) painter_id: PainterId,
 
     /// Our [`WebViewRenderer`]s, one for every `WebView`.
-    pub(crate) webview_renderers: FxHashMap<WebViewId, WebViewRenderer>,
+    /// Using BTreeMap to ensure deterministic iteration order by WebViewId,
+    /// which is important for proper z-ordering in the display list (parents before children).
+    pub(crate) webview_renderers: BTreeMap<WebViewId, WebViewRenderer>,
+
+    /// Set of WebViewIds that are embedded webviews. These should not be rendered
+    /// as top-level iframes in the root display list, as they are already referenced
+    /// by their parent's display list through IFrameFragment.
+    pub(crate) embedded_webview_ids: FxHashSet<WebViewId>,
 
     /// Tracks whether or not the view needs to be repainted.
     pub(crate) needs_repaint: Cell<RepaintReason>,
@@ -259,6 +267,7 @@ impl Painter {
             painter_id,
             embedder_to_constellation_sender,
             webview_renderers: Default::default(),
+            embedded_webview_ids: Default::default(),
             rendering_context,
             needs_repaint: Cell::default(),
             pending_frames: Default::default(),
@@ -279,25 +288,35 @@ impl Painter {
         painter
     }
 
-    pub(crate) fn perform_updates(&mut self) {
+    /// Process pending scroll and zoom events for all webview renderers.
+    /// Returns a list of (webview_id, unconsumed_scroll) tuples for scroll events
+    /// that were not consumed by embedded webviews and should be forwarded to parents.
+    pub(crate) fn perform_updates(
+        &mut self,
+    ) -> Vec<(WebViewId, crate::webview_renderer::ScrollEvent)> {
         // The WebXR thread may make a different context current
         if let Err(err) = self.rendering_context.make_current() {
             warn!("Failed to make the rendering context current: {:?}", err);
         }
 
         let mut need_zoom = false;
-        let scroll_offset_updates: Vec<_> = self
-            .webview_renderers
-            .values_mut()
-            .filter_map(|webview_renderer| {
-                let (zoom, scroll_result) = webview_renderer
-                    .process_pending_scroll_and_pinch_zoom_events(&self.webrender_api);
-                need_zoom = need_zoom || (zoom == PinchZoomResult::DidPinchZoom);
-                scroll_result
-            })
-            .collect();
+        let mut unconsumed_scrolls = Vec::new();
+        let mut scroll_offset_updates = Vec::new();
+
+        for (webview_id, webview_renderer) in self.webview_renderers.iter_mut() {
+            let result =
+                webview_renderer.process_pending_scroll_and_pinch_zoom_events(&self.webrender_api);
+            need_zoom = need_zoom || (result.pinch_zoom_result == PinchZoomResult::DidPinchZoom);
+            if let Some(scroll_result) = result.scroll_result {
+                scroll_offset_updates.push(scroll_result);
+            }
+            if let Some(unconsumed_scroll) = result.unconsumed_scroll {
+                unconsumed_scrolls.push((*webview_id, unconsumed_scroll));
+            }
+        }
 
         self.send_zoom_and_scroll_offset_updates(need_zoom, scroll_offset_updates);
+        unconsumed_scrolls
     }
 
     #[track_caller]
@@ -592,7 +611,16 @@ impl Painter {
 
         let root_clip_id = builder.define_clip_rect(root_reference_frame, viewport_rect);
         let clip_chain_id = builder.define_clip_chain(None, [root_clip_id]);
+
+        // Iterate over webview_renderers in order. BTreeMap ensures deterministic ordering
+        // by WebViewId, so parents (e.g., (0,1)) come before children (e.g., (0,2)).
+        // This ensures children are rendered on top for proper hit testing.
         for webview_renderer in self.webview_renderers.values() {
+            // Skip embedded webviews - they are rendered as part of their parent's
+            // display list through IFrameFragment, not as top-level iframes.
+            if self.embedded_webview_ids.contains(&webview_renderer.id) {
+                continue;
+            }
             if webview_renderer.hidden() {
                 continue;
             }
@@ -653,7 +681,7 @@ impl Painter {
     /// Set the root pipeline for our WebRender scene to a display list that consists of an iframe
     /// for each visible top-level browsing context, applying a transformation on the root for
     /// pinch zoom, page zoom, and HiDPI scaling.
-    fn send_root_pipeline_display_list(&mut self) {
+    pub(crate) fn send_root_pipeline_display_list(&mut self) {
         let mut transaction = Transaction::new();
         self.send_root_pipeline_display_list_in_transaction(&mut transaction);
         self.generate_frame(&mut transaction, RenderReasons::SCENE);
@@ -715,6 +743,21 @@ impl Painter {
             );
         }
 
+        self.generate_frame(&mut transaction, RenderReasons::APZ);
+        self.send_transaction(transaction);
+    }
+
+    /// Send a single scroll result to WebRender. This is used when forwarding
+    /// unconsumed scroll events from embedded webviews to their parent.
+    pub(crate) fn send_scroll_result_to_webrender(&mut self, scroll_result: ScrollResult) {
+        let mut transaction = Transaction::new();
+        transaction.set_scroll_offsets(
+            scroll_result.external_scroll_id,
+            vec![SampledScrollOffset {
+                offset: scroll_result.offset,
+                generation: 0,
+            }],
+        );
         self.generate_frame(&mut transaction, RenderReasons::APZ);
         self.send_transaction(transaction);
     }
@@ -787,6 +830,26 @@ impl Painter {
 
         webview_renderer.set_frame_tree(frame_tree);
         self.send_root_pipeline_display_list();
+    }
+
+    /// Mark a webview as an embedded webview. Embedded webviews are not rendered
+    /// as top-level iframes in the root display list, as they are already referenced
+    /// by their parent's display list through IFrameFragment.
+    pub(crate) fn register_embedded_webview(&mut self, embedded_webview_id: WebViewId) {
+        self.embedded_webview_ids.insert(embedded_webview_id);
+        // Also set the flag on the webview renderer so it handles zoom correctly
+        if let Some(webview_renderer) = self.webview_renderers.get_mut(&embedded_webview_id) {
+            webview_renderer.set_is_embedded_webview(true);
+        }
+    }
+
+    /// Remove a webview from the embedded webview set.
+    pub(crate) fn unregister_embedded_webview(&mut self, embedded_webview_id: WebViewId) {
+        self.embedded_webview_ids.remove(&embedded_webview_id);
+        // Also clear the flag on the webview renderer
+        if let Some(webview_renderer) = self.webview_renderers.get_mut(&embedded_webview_id) {
+            webview_renderer.set_is_embedded_webview(false);
+        }
     }
 
     pub(crate) fn set_throttled(
@@ -1201,15 +1264,23 @@ impl Painter {
         webview: Box<dyn WebViewTrait>,
         viewport_details: ViewportDetails,
     ) {
-        self.webview_renderers
-            .entry(webview.id())
-            .or_insert(WebViewRenderer::new(
+        let webview_id = webview.id();
+        let is_embedded = self.embedded_webview_ids.contains(&webview_id);
+        self.webview_renderers.entry(webview_id).or_insert_with(|| {
+            let mut renderer = WebViewRenderer::new(
                 webview,
                 viewport_details,
                 self.embedder_to_constellation_sender.clone(),
                 self.refresh_driver.clone(),
                 self.webrender_document,
-            ));
+            );
+            // If this webview was already registered as embedded before being created,
+            // set the flag now
+            if is_embedded {
+                renderer.set_is_embedded_webview(true);
+            }
+            renderer
+        });
     }
 
     pub(crate) fn remove_webview(&mut self, webview_id: WebViewId) {
@@ -1296,25 +1367,26 @@ impl Painter {
     }
 
     pub(crate) fn notify_input_event(&mut self, webview_id: WebViewId, event: InputEventAndId) {
-        if let Some(webview_renderer) = self.webview_renderers.get_mut(&webview_id) {
-            match &event.event {
-                InputEvent::MouseMove(event) => {
-                    // We only track the last mouse move position for non-touch events.
-                    if !event.is_compatibility_event_for_touch {
-                        let event_point = event
-                            .point
-                            .as_device_point(webview_renderer.device_pixels_per_page_pixel());
-                        self.last_mouse_move_position = Some(event_point);
-                    }
-                },
-                InputEvent::MouseLeftViewport(_) => {
-                    self.last_mouse_move_position = None;
-                },
-                _ => {},
-            }
-
-            webview_renderer.notify_input_event(&self.webrender_api, &self.needs_repaint, event);
+        let Some(webview_renderer) = self.webview_renderers.get_mut(&webview_id) else {
+            return;
+        };
+        match &event.event {
+            InputEvent::MouseMove(event) => {
+                // We only track the last mouse move position for non-touch events.
+                if !event.is_compatibility_event_for_touch {
+                    let event_point = event
+                        .point
+                        .as_device_point(webview_renderer.device_pixels_per_page_pixel());
+                    self.last_mouse_move_position = Some(event_point);
+                }
+            },
+            InputEvent::MouseLeftViewport(_) => {
+                self.last_mouse_move_position = None;
+            },
+            _ => {},
         }
+
+        webview_renderer.notify_input_event(&self.webrender_api, &self.needs_repaint, event);
         self.disable_lcp_calculation_for_webview(webview_id);
     }
 
@@ -1328,6 +1400,38 @@ impl Painter {
             webview_renderer.notify_scroll_event(scroll, point);
         }
         self.disable_lcp_calculation_for_webview(webview_id);
+    }
+
+    /// Attempt to scroll at the given point. Returns true if scroll was consumed.
+    /// This is used for embedded webviews to check if the scroll should bubble up to the parent.
+    pub(crate) fn try_scroll_at_point(
+        &mut self,
+        webview_id: WebViewId,
+        scroll: Scroll,
+        point: WebViewPoint,
+    ) -> bool {
+        let Some(webview_renderer) = self.webview_renderers.get_mut(&webview_id) else {
+            return false;
+        };
+        let device_point = point.as_device_point(webview_renderer.device_pixels_per_page_pixel());
+        webview_renderer
+            .scroll_node_at_device_point(&self.webrender_api, device_point, scroll)
+            .is_some()
+    }
+
+    /// Try to scroll any scrollable node in the webview and send the result to WebRender.
+    /// This is used for bubbling scroll events from embedded iframes when hit-testing fails.
+    pub(crate) fn try_scroll_any_and_send_to_webrender(
+        &mut self,
+        webview_id: WebViewId,
+        scroll: Scroll,
+    ) {
+        let Some(webview_renderer) = self.webview_renderers.get_mut(&webview_id) else {
+            return;
+        };
+        if let Some(scroll_result) = webview_renderer.try_scroll_any(scroll) {
+            self.send_scroll_result_to_webrender(scroll_result);
+        }
     }
 
     pub(crate) fn pinch_zoom(
@@ -1376,7 +1480,6 @@ impl Painter {
         result: InputEventResult,
     ) {
         let Some(webview_renderer) = self.webview_renderers.get_mut(&webview_id) else {
-            warn!("Handled input event for unknown webview: {webview_id}");
             return;
         };
         webview_renderer.notify_input_event_handled(

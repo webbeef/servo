@@ -206,6 +206,10 @@ pub struct LayoutThread {
 
     /// The collector for calculating Largest Contentful Paint
     lcp_candidate_collector: RefCell<Option<LargestContentfulPaintCandidateCollector>>,
+
+    /// The current page zoom for rendering (used by embedded webviews).
+    /// When this changes, we need to trigger a new stacking context tree build.
+    page_zoom_for_rendering: Cell<Option<f32>>,
 }
 
 pub struct LayoutFactoryImpl();
@@ -246,10 +250,23 @@ impl Layout for LayoutThread {
     fn set_viewport_details(&mut self, viewport_details: ViewportDetails) -> bool {
         let device = self.stylist.device_mut();
         let device_pixel_ratio = Scale::new(viewport_details.hidpi_scale_factor.get());
-        if device.viewport_size() == viewport_details.size &&
-            device.device_pixel_ratio() == device_pixel_ratio
-        {
-            return false;
+
+        // Check if page_zoom_for_rendering changed (for embedded webviews)
+        let zoom_changed =
+            self.page_zoom_for_rendering.get() != viewport_details.page_zoom_for_rendering;
+        if zoom_changed {
+            self.page_zoom_for_rendering
+                .set(viewport_details.page_zoom_for_rendering);
+            // Need to rebuild stacking context tree to apply the new zoom transform
+            self.need_new_stacking_context_tree.set(true);
+            self.need_new_display_list.set(true);
+        }
+
+        let size_changed = device.viewport_size() != viewport_details.size ||
+            device.device_pixel_ratio() != device_pixel_ratio;
+
+        if !size_changed {
+            return zoom_changed;
         }
 
         device.set_viewport_size(viewport_details.size);
@@ -765,6 +782,7 @@ impl LayoutThread {
             debug: opts::get().debug.clone(),
             previously_highlighted_dom_node: Cell::new(None),
             lcp_candidate_collector: Default::default(),
+            page_zoom_for_rendering: Cell::new(config.viewport_details.page_zoom_for_rendering),
         }
     }
 

@@ -4,6 +4,9 @@
 
 #![deny(unsafe_code)]
 
+pub mod embedder_prefs;
 pub mod opts;
 pub mod pref_util;
 pub mod prefs;
+
+pub use embedder_prefs::EmbedderPreferences;

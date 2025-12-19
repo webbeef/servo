@@ -38,6 +38,7 @@ log = { workspace = true }
 media = { path = "../media" }
 malloc_size_of = { workspace = true }
 paint_api = { workspace = true }
+pixels = { path = "../pixels" }
 profile_traits = { workspace = true }
 rayon = { workspace = true }
 rustc-hash = { workspace = true }

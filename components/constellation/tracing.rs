@@ -83,6 +83,7 @@ mod from_embedder {
                 Self::EmbedderControlResponse(..) => target!("EmbedderControlResponse"),
                 Self::UserContentManagerAction(..) => target!("UserContentManagerAction"),
                 Self::UpdatePinchZoomInfos(..) => target!("UpdatePinchZoomInfos"),
+                Self::NotifyServoError(..) => target!("NotifyServoError"),
             }
         }
     }
@@ -134,6 +135,10 @@ mod from_script {
                 Self::DisentanglePorts(..) => target!("DisentanglePorts"),
                 Self::NewBroadcastChannelRouter(..) => target!("NewBroadcastChannelRouter"),
                 Self::RemoveBroadcastChannelRouter(..) => target!("RemoveBroadcastChannelRouter"),
+                Self::RegisterEmbedderErrorListener(..) => target!("RegisterEmbedderErrorListener"),
+                Self::UnregisterEmbedderErrorListener(..) => {
+                    target!("UnregisterEmbedderErrorListener")
+                },
                 Self::NewBroadcastChannelNameInRouter(..) => {
                     target!("NewBroadcastChannelNameInRouter")
                 },
@@ -142,6 +147,7 @@ mod from_script {
                 },
                 Self::ScheduleBroadcast(..) => target!("ScheduleBroadcast"),
                 Self::BroadcastStorageEvent(..) => target!("BroadcastStorageEvent"),
+                Self::BroadcastPreferenceChange(..) => target!("BroadcastPreferenceChange"),
                 Self::ChangeRunningAnimationsState(..) => target!("ChangeRunningAnimationsState"),
                 Self::CreateCanvasPaintThread(..) => target!("CreateCanvasPaintThread"),
                 Self::Focus(..) => target!("Focus"),
@@ -163,6 +169,8 @@ mod from_script {
                 Self::ScriptLoadedURLInIFrame(..) => target!("ScriptLoadedURLInIFrame"),
                 Self::ScriptNewIFrame(..) => target!("ScriptNewIFrame"),
                 Self::CreateAuxiliaryWebView(..) => target!("ScriptNewAuxiliary"),
+                Self::CreateEmbeddedWebView(..) => target!("CreateEmbeddedWebView"),
+                Self::RemoveEmbeddedWebView(..) => target!("RemoveEmbeddedWebView"),
                 Self::ActivateDocument => target!("ActivateDocument"),
                 Self::SetDocumentState(..) => target!("SetDocumentState"),
                 Self::SetFinalUrl(..) => target!("SetFinalUrl"),
@@ -184,6 +192,35 @@ mod from_script {
                 Self::ForwardKeyboardScroll(..) => target!("ForwardKeyboardScroll"),
                 Self::RespondToScreenshotReadinessRequest(..) => {
                     target!("RespondToScreenshotReadinessRequest")
+                },
+                Self::EmbeddedWebViewNotification(..) => {
+                    target!("EmbeddedWebViewNotification")
+                },
+                Self::EmbeddedWebViewLoad(..) => target!("EmbeddedWebViewLoad"),
+                Self::EmbeddedWebViewReload(..) => target!("EmbeddedWebViewReload"),
+                Self::EmbeddedWebViewTraverseHistory(..) => {
+                    target!("EmbeddedWebViewTraverseHistory")
+                },
+                Self::EmbeddedWebViewTakeScreenshot(..) => {
+                    target!("EmbeddedWebViewTakeScreenshot")
+                },
+                Self::ForwardEventToEmbeddedWebView(..) => {
+                    target!("ForwardEventToEmbeddedWebView")
+                },
+                Self::EmbeddedWebViewControlResponse(..) => {
+                    target!("EmbeddedWebViewControlResponse")
+                },
+                Self::EmbeddedWebViewSetPageZoom(..) => {
+                    target!("EmbeddedWebViewSetPageZoom")
+                },
+                Self::InjectInputToActiveIme(..) => {
+                    target!("InjectInputToActiveIme")
+                },
+                Self::SetActiveImeWebView(..) => {
+                    target!("SetActiveImeWebView")
+                },
+                Self::ClearActiveImeWebView(..) => {
+                    target!("ClearActiveImeWebView")
                 },
             }
         }

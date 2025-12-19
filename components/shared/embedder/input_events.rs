@@ -59,6 +59,17 @@ pub struct InputEventAndId {
     pub id: InputEventId,
 }
 
+impl InputEventAndId {
+    /// Scale the event's point coordinates by the given factor (divides by scale).
+    /// Used for converting coordinates to account for page zoom in embedded webviews.
+    pub fn scale_point_by(self, scale: f32) -> Self {
+        Self {
+            event: self.event.scale_point_by(scale),
+            id: self.id,
+        }
+    }
+}
+
 impl From<InputEvent> for InputEventAndId {
     fn from(event: InputEvent) -> Self {
         Self {
@@ -90,6 +101,31 @@ impl InputEvent {
             InputEvent::Touch(event) => Some(event.point),
             InputEvent::Wheel(event) => Some(event.point),
             InputEvent::Scroll(..) => None,
+        }
+    }
+
+    /// Scale the point coordinates by the given factor (divides by scale).
+    /// Used for converting coordinates to account for page zoom in embedded webviews.
+    pub fn scale_point_by(self, scale: f32) -> Self {
+        match self {
+            InputEvent::MouseButton(mut event) => {
+                event.point = event.point.scale_by(scale);
+                InputEvent::MouseButton(event)
+            },
+            InputEvent::MouseMove(mut event) => {
+                event.point = event.point.scale_by(scale);
+                InputEvent::MouseMove(event)
+            },
+            InputEvent::Touch(mut event) => {
+                event.point = event.point.scale_by(scale);
+                InputEvent::Touch(event)
+            },
+            InputEvent::Wheel(mut event) => {
+                event.point = event.point.scale_by(scale);
+                InputEvent::Wheel(event)
+            },
+            // Events without coordinates pass through unchanged
+            other => other,
         }
     }
 }
@@ -226,7 +262,7 @@ pub struct MouseLeftViewportEvent {
 }
 
 /// The type of input represented by a multi-touch event.
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
 pub enum TouchEventType {
     /// A new touch point came in contact with the screen.
     Down,

@@ -5,12 +5,15 @@
 use std::cell::Cell;
 
 use base::Epoch;
-use base::generic_channel::GenericSend;
-use constellation_traits::{LoadData, NavigationHistoryBehavior};
+use base::generic_channel::{GenericSend, GenericSender};
+use constellation_traits::{
+    EmbeddedWebViewEventType, LoadData, NavigationHistoryBehavior, ScriptToConstellationMessage,
+};
 use embedder_traits::{
-    ContextMenuAction, ContextMenuElementInformation, ContextMenuElementInformationFlags,
-    ContextMenuItem, ContextMenuRequest, EditingActionEvent, EmbedderControlId,
-    EmbedderControlRequest, EmbedderControlResponse, EmbedderMsg,
+    AllowOrDeny, ContextMenuAction, ContextMenuElementInformation,
+    ContextMenuElementInformationFlags, ContextMenuItem, ContextMenuRequest, EditingActionEvent,
+    EmbedderControlId, EmbedderControlRequest, EmbedderControlResponse, EmbedderMsg,
+    PermissionFeature, PermissionPromptRequest, SimpleDialogRequest,
 };
 use euclid::{Point2D, Rect, Size2D};
 use ipc_channel::router::ROUTER;
@@ -35,8 +38,8 @@ use crate::dom::inputevent::HitTestResult;
 use crate::dom::node::{Node, NodeTraits, ShadowIncluding};
 use crate::dom::textcontrol::TextControlElement;
 use crate::dom::types::{
-    Element, HTMLAnchorElement, HTMLElement, HTMLImageElement, HTMLInputElement, HTMLSelectElement,
-    HTMLTextAreaElement, Window,
+    Document, Element, HTMLAnchorElement, HTMLElement, HTMLImageElement, HTMLInputElement,
+    HTMLSelectElement, HTMLTextAreaElement, Window,
 };
 use crate::messaging::MainThreadScriptMsg;
 
@@ -47,6 +50,7 @@ pub(crate) enum ControlElement {
     FileInput(DomRoot<HTMLInputElement>),
     Ime(DomRoot<HTMLElement>),
     ContextMenu(ContextMenuNodes),
+    PermissionPrompt(DomRoot<Document>),
 }
 
 impl ControlElement {
@@ -57,6 +61,7 @@ impl ControlElement {
             ControlElement::FileInput(element) => element.upcast::<Node>(),
             ControlElement::Ime(element) => element.upcast::<Node>(),
             ControlElement::ContextMenu(context_menu_nodes) => &context_menu_nodes.node,
+            ControlElement::PermissionPrompt(document) => document.upcast::<Node>(),
         }
     }
 }
@@ -129,39 +134,77 @@ impl DocumentEmbedderControls {
             EmbedderControlRequest::SelectElement(..) |
             EmbedderControlRequest::ColorPicker(..) |
             EmbedderControlRequest::InputMethod(..) |
-            EmbedderControlRequest::ContextMenu(..) => self
-                .window
-                .send_to_embedder(EmbedderMsg::ShowEmbedderControl(id, rect, request)),
-            EmbedderControlRequest::FilePicker(file_picker_request) => {
-                let (sender, receiver) = profile_traits::ipc::channel(
-                    self.window.as_global_scope().time_profiler_chan().clone(),
-                )
-                .expect("Error initializing channel");
-                let main_thread_sender = self.window.main_thread_script_chan().clone();
-                ROUTER.add_typed_route(
-                    receiver.to_ipc_receiver(),
-                    Box::new(move |result| {
-                        let Ok(embedder_control_response) = result else {
-                            return;
-                        };
-                        if let Err(error) = main_thread_sender.send(
-                            MainThreadScriptMsg::ForwardEmbedderControlResponseFromFileManager(
-                                id,
-                                embedder_control_response,
+            EmbedderControlRequest::ContextMenu(..) |
+            EmbedderControlRequest::PermissionPrompt(..) => {
+                // If this is an embedded webview, route the control request to the parent
+                // iframe element via the Constellation. Otherwise, send directly to the embedder.
+                if self.window.as_global_scope().is_embedded_webview() {
+                    self.window.send_to_constellation(
+                        ScriptToConstellationMessage::EmbeddedWebViewNotification(
+                            EmbeddedWebViewEventType::EmbedderControlShow { id, rect, request },
+                        ),
+                    );
+                } else {
+                    // Check if this is an InputMethod request before consuming it
+                    let is_input_method =
+                        matches!(request, EmbedderControlRequest::InputMethod(..));
+                    self.window
+                        .send_to_embedder(EmbedderMsg::ShowEmbedderControl(id, rect, request));
+                    // Also notify constellation for IME tracking if this is an InputMethod control
+                    if is_input_method {
+                        self.window.send_to_constellation(
+                            ScriptToConstellationMessage::SetActiveImeWebView(
+                                self.window.webview_id(),
                             ),
-                        ) {
-                            warn!("Could not send FileManager response to main thread: {error}")
-                        }
-                    }),
-                );
-                self.window
-                    .as_global_scope()
-                    .resource_threads()
-                    .sender()
-                    .send(CoreResourceMsg::ToFileManager(
-                        FileManagerThreadMsg::SelectFiles(id, file_picker_request, sender),
-                    ))
-                    .unwrap();
+                        );
+                    }
+                }
+            },
+            EmbedderControlRequest::FilePicker(file_picker_request) => {
+                // If this is an embedded webview, route the control request to the parent
+                // iframe element via the Constellation.
+                if self.window.as_global_scope().is_embedded_webview() {
+                    self.window.send_to_constellation(
+                        ScriptToConstellationMessage::EmbeddedWebViewNotification(
+                            EmbeddedWebViewEventType::EmbedderControlShow {
+                                id,
+                                rect,
+                                request: EmbedderControlRequest::FilePicker(file_picker_request),
+                            },
+                        ),
+                    );
+                } else {
+                    // For non-embedded webviews, use the FileManager directly
+                    let (sender, receiver) = profile_traits::ipc::channel(
+                        self.window.as_global_scope().time_profiler_chan().clone(),
+                    )
+                    .expect("Error initializing channel");
+                    let main_thread_sender = self.window.main_thread_script_chan().clone();
+                    ROUTER.add_typed_route(
+                        receiver.to_ipc_receiver(),
+                        Box::new(move |result| {
+                            let Ok(embedder_control_response) = result else {
+                                return;
+                            };
+                            if let Err(error) = main_thread_sender.send(
+                                MainThreadScriptMsg::ForwardEmbedderControlResponseFromFileManager(
+                                    id,
+                                    embedder_control_response,
+                                ),
+                            ) {
+                                warn!("Could not send FileManager response to main thread: {error}")
+                            }
+                        }),
+                    );
+                    self.window
+                        .as_global_scope()
+                        .resource_threads()
+                        .sender()
+                        .send(CoreResourceMsg::ToFileManager(
+                            FileManagerThreadMsg::SelectFiles(id, file_picker_request, sender),
+                        ))
+                        .unwrap();
+                }
             },
         }
 
@@ -180,10 +223,65 @@ impl DocumentEmbedderControls {
                     pipeline_id: self.window.pipeline_id(),
                     index: index.0,
                 };
-                self.window
-                    .send_to_embedder(EmbedderMsg::HideEmbedderControl(id));
+                // If this is an embedded webview, route the hide request to the parent
+                // iframe element via the Constellation. Otherwise, send directly to the embedder.
+                if self.window.as_global_scope().is_embedded_webview() {
+                    self.window.send_to_constellation(
+                        ScriptToConstellationMessage::EmbeddedWebViewNotification(
+                            EmbeddedWebViewEventType::EmbedderControlHide { id },
+                        ),
+                    );
+                } else {
+                    self.window
+                        .send_to_embedder(EmbedderMsg::HideEmbedderControl(id));
+                    // Also notify constellation to clear IME tracking if this is an Ime control
+                    if matches!(control_element, ControlElement::Ime(_)) {
+                        self.window.send_to_constellation(
+                            ScriptToConstellationMessage::ClearActiveImeWebView(
+                                self.window.webview_id(),
+                            ),
+                        );
+                    }
+                }
                 false
             });
+    }
+
+    /// Hide all visible embedder controls. This is called when the document becomes inactive
+    /// (e.g., when navigating to a new page) to ensure controls like the virtual keyboard
+    /// are hidden.
+    pub(crate) fn hide_all_controls(&self) {
+        let has_ime_control = self
+            .visible_elements
+            .borrow()
+            .values()
+            .any(|c| matches!(c, ControlElement::Ime(_)));
+        let indices: Vec<_> = self.visible_elements.borrow().keys().cloned().collect();
+        for index in indices {
+            let id = EmbedderControlId {
+                webview_id: self.window.webview_id(),
+                pipeline_id: self.window.pipeline_id(),
+                index: index.0,
+            };
+            if self.window.as_global_scope().is_embedded_webview() {
+                self.window.send_to_constellation(
+                    ScriptToConstellationMessage::EmbeddedWebViewNotification(
+                        EmbeddedWebViewEventType::EmbedderControlHide { id },
+                    ),
+                );
+            } else {
+                self.window
+                    .send_to_embedder(EmbedderMsg::HideEmbedderControl(id));
+            }
+        }
+        // Also notify constellation to clear IME tracking if we had an Ime control
+        if has_ime_control && !self.window.as_global_scope().is_embedded_webview() {
+            self.window
+                .send_to_constellation(ScriptToConstellationMessage::ClearActiveImeWebView(
+                    self.window.webview_id(),
+                ));
+        }
+        self.visible_elements.borrow_mut().clear();
     }
 
     pub(crate) fn handle_embedder_control_response(
@@ -229,10 +327,44 @@ impl DocumentEmbedderControls {
             ) => {
                 context_menu_nodes.handle_context_menu_action(action, can_gc);
             },
+            (ControlElement::PermissionPrompt(_), EmbedderControlResponse::PermissionPrompt(_)) => {
+                // Permission prompt responses go directly through the IPC sender
+                // included in the request, so this path is not used.
+            },
             (_, _) => unreachable!(
                 "The response to a form control should always match it's originating type."
             ),
         }
+    }
+
+    /// Show a simple dialog (alert, confirm, prompt) for an embedded webview.
+    /// The request includes an IPC sender that the parent iframe will use to respond directly.
+    pub(crate) fn show_simple_dialog_for_embedded_webview(&self, request: SimpleDialogRequest) {
+        // Send the request (with IPC sender) to parent via constellation.
+        // The parent HTMLIFrameElement will store the sender and use it to respond.
+        self.window.send_to_constellation(
+            ScriptToConstellationMessage::EmbeddedWebViewNotification(
+                EmbeddedWebViewEventType::SimpleDialogShow(request),
+            ),
+        );
+    }
+
+    /// Show a permission prompt for an embedded webview.
+    /// The request includes an IPC sender that the parent iframe will use to respond directly.
+    pub(crate) fn show_permission_prompt(
+        &self,
+        feature: PermissionFeature,
+        response_sender: GenericSender<AllowOrDeny>,
+    ) -> EmbedderControlId {
+        let request = EmbedderControlRequest::PermissionPrompt(PermissionPromptRequest {
+            feature,
+            response_sender,
+        });
+        self.show_embedder_control(
+            ControlElement::PermissionPrompt(self.window.Document()),
+            request,
+            None,
+        )
     }
 
     pub(crate) fn show_context_menu(&self, hit_test_result: &HitTestResult) {
@@ -410,8 +542,11 @@ impl ContextMenuNodes {
             let Some(browsing_context) = document.browsing_context() else {
                 return;
             };
-            let (browsing_context, new) = browsing_context
-                .choose_browsing_context("_blank".into(), true /* nooopener */);
+            let (browsing_context, new) = browsing_context.choose_browsing_context(
+                "_blank".into(),
+                true, /* nooopener */
+                Some(url.clone()),
+            );
             let Some(browsing_context) = browsing_context else {
                 return;
             };

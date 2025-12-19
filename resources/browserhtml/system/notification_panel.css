@@ -1,0 +1,234 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+
+:host {
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  left: var(--sidebar-width);
+  width: var(--size-panel-width);
+  z-index: var(--z-panel);
+  pointer-events: none;
+  font-family: var(--font-family-base);
+}
+
+:host([open]) {
+  pointer-events: auto;
+}
+
+.panel {
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: 100%;
+  background: var(--bg-menu);
+  box-shadow: 4px 0 16px var(--color-shadow-menu);
+  transform: translateX(-100%);
+  transition: transform var(--transition-fast),
+    visibility var(--transition-fast);
+  display: flex;
+  flex-direction: column;
+  visibility: hidden;
+}
+
+:host([open]) .panel {
+  transform: translateX(0);
+  visibility: visible;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--spacing-sm) var(--spacing-md);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.header-title {
+  font-weight: var(--font-weight-bold);
+  font-size: var(--font-size-menu);
+  color: var(--color-text);
+}
+
+.header-actions {
+  display: flex;
+  gap: var(--spacing-sm);
+}
+
+.clear-btn {
+  background: none;
+  border: none;
+  color: var(--color-primary);
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+  padding: var(--spacing-xs) var(--spacing-sm);
+  border-radius: var(--radius-sm);
+}
+
+.clear-btn:hover {
+  background: var(--bg-hover);
+}
+
+.close-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: var(--spacing-xs);
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.close-btn:hover {
+  background: var(--bg-hover);
+}
+
+.notification-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--spacing-sm) 0;
+}
+
+.notification-item {
+  padding: var(--spacing-sm) var(--spacing-md);
+  border-bottom: 1px solid var(--color-border);
+  cursor: pointer;
+  transition: background var(--transition-fast);
+  position: relative;
+}
+
+.notification-item:hover {
+  background: var(--bg-hover);
+}
+
+.notification-item:last-child {
+  border-bottom: none;
+}
+
+.notification-header {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--spacing-sm);
+}
+
+.notification-icon {
+  width: var(--size-notification-icon);
+  height: var(--size-notification-icon);
+  border-radius: var(--radius-sm);
+  background: var(--bg-icon);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  overflow: hidden;
+}
+
+.notification-icon img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.notification-icon lucide-icon {
+  color: var(--color-primary);
+}
+
+.notification-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.notification-title {
+  font-weight: var(--font-weight-bold);
+  font-size: var(--font-size-menu);
+  color: var(--color-text);
+  margin-bottom: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.notification-body {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+  overflow: hidden;
+}
+
+.notification-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  margin-top: var(--spacing-xs);
+  font-size: var(--font-size-xs);
+  color: var(--color-text-tertiary);
+}
+
+.notification-time {
+  white-space: nowrap;
+}
+
+.notification-dismiss {
+  position: absolute;
+  top: var(--spacing-sm);
+  right: var(--spacing-sm);
+  width: var(--size-icon-sm);
+  height: var(--size-icon-sm);
+  border: none;
+  background: none;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity var(--transition-fast);
+}
+
+.notification-item:hover .notification-dismiss {
+  opacity: 1;
+}
+
+.notification-dismiss:hover {
+  background: var(--bg-hover);
+}
+
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--color-text-secondary);
+  padding: var(--spacing-lg);
+  text-align: center;
+}
+
+.empty-state lucide-icon {
+  font-size: 3em;
+  margin-bottom: var(--spacing-md);
+  opacity: var(--opacity-muted);
+}
+
+.empty-state-text {
+  font-size: var(--font-size-menu);
+}
+
+.backdrop {
+  position: fixed;
+  top: 0;
+  left: var(--sidebar-width);
+  right: 0;
+  bottom: 0;
+  background: var(--color-backdrop);
+  opacity: 0;
+  transition: opacity var(--transition-fast), visibility var(--transition-fast);
+  pointer-events: none;
+  visibility: hidden;
+}
+
+:host([open]) .backdrop {
+  opacity: 1;
+  pointer-events: auto;
+  visibility: visible;
+}

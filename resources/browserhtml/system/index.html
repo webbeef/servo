@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+<html>
+  <head>
+    <title>Browser.HTML</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <link rel="stylesheet" href="//theme.localhost:8888/index.css" />
+    <link rel="stylesheet" href="//shared.localhost:8888/fonts/fonts.css" />
+    <link rel="stylesheet" href="//shared.localhost:8888/third_party/lucide/lucide.css" />
+    <script type="module" src="//shared.localhost:8888/lucide_icon.js"></script>
+    <link rel="stylesheet" href="index.css" />
+    <link rel="stylesheet" href="mobile.css" />
+    <script src="./third_party/mousetrap/mousetrap.min.js"></script>
+    <script src="./third_party/mousetrap/mousetrap-global-bind.min.js"></script>
+    <script src="./third_party/fend/fend_wasm.js"></script>
+    <script type="module" src="//shared.localhost:8888/theme.js"></script>
+    <script type="module" src="notification_panel.js"></script>
+    <script type="module" src="index.js"></script>
+  </head>
+  <body>
+    <header id="header">
+      <lucide-icon class="resize" name="move-diagonal-2"></lucide-icon>
+      <span>Browser.HTML</span>
+      <lucide-icon class="close" name="x"></lucide-icon>
+    </header>
+    <main>
+      <div id="sidebar">
+        <lucide-icon name="menu" id="menu-icon"></lucide-icon>
+        <div id="views-icons"></div>
+        <div id="notifications-icon-container">
+          <lucide-icon name="bell" id="notifications-icon"></lucide-icon>
+          <span id="notifications-badge" class="hidden">0</span>
+        </div>
+         <lucide-icon name="plus" id="plus-icon"></lucide-icon>
+      </div>
+      <notification-panel id="notification-panel"></notification-panel>
+      <div id="root"></div>
+    </main>
+    <footer id="footer">
+    </footer>
+  </body>
+</html>

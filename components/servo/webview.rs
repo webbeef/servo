@@ -209,6 +209,18 @@ impl WebView {
         self.delegate().request_create_new(self.clone(), request);
     }
 
+    pub(crate) fn request_create_embedded(
+        &self,
+        response_sender: GenericSender<Option<NewWebViewDetails>>,
+    ) {
+        let request = CreateNewWebViewRequest {
+            servo: self.inner().servo.clone(),
+            responder: IpcResponder::new(response_sender, None),
+        };
+        self.delegate()
+            .request_create_embedded(self.clone(), request);
+    }
+
     pub(crate) fn viewport_details(&self) -> ViewportDetails {
         // The division by 1 represents the page's default zoom of 100%,
         // and gives us the appropriate CSSPixel type for the viewport.
@@ -218,6 +230,7 @@ impl WebView {
         ViewportDetails {
             size: scaled_viewport_size / Scale::new(1.0),
             hidpi_scale_factor: Scale::new(inner.hidpi_scale_factor.0),
+            page_zoom_for_rendering: None,
         }
     }
 
@@ -736,6 +749,11 @@ impl WebView {
             },
             EmbedderControlRequest::FilePicker { .. } => {
                 unreachable!("This message should be routed through the FileManagerThread")
+            },
+            EmbedderControlRequest::PermissionPrompt { .. } => {
+                unreachable!(
+                    "Permission prompts for top-level webviews use EmbedderMsg::PromptPermission, not ShowEmbedderControl"
+                )
             },
         };
 

@@ -1,0 +1,10 @@
+https://github.com/printfn/fend/
+
+Current revision: 91998f97189ad91b481a9762e9421e99fc48fabf
+
+Build with:
+
+cd wasm
+wasm-pack build --release --no-typescript --target no-modules
+
+and replace wasm_bindgen by fend_wasm in fend_wasm.js

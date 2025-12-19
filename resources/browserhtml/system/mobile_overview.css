@@ -1,0 +1,230 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+
+:host {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: var(--z-sheet);
+  pointer-events: none;
+}
+
+:host([open]) {
+  pointer-events: auto;
+}
+
+.overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: var(--bg-main);
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+:host([open]) .overlay {
+  opacity: 1;
+}
+
+.container {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  flex-direction: column;
+  opacity: 0;
+  transform: scale(0.9);
+  transition:
+    opacity 0.3s ease,
+    transform 0.3s ease;
+}
+
+:host([open]) .container {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--spacing-md);
+  padding-top: var(--spacing-md);
+}
+
+.header-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--color-text-menu);
+}
+
+.header-actions {
+  display: flex;
+  gap: var(--spacing-sm);
+}
+
+.header-button {
+  background: var(--bg-menu);
+  border: none;
+  color: var(--color-text-menu);
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.2s ease;
+}
+
+.header-button:hover {
+  background: var(--color-menu-item-hover);
+}
+
+.grid {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--spacing-md);
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: var(--spacing-md);
+  align-content: start;
+}
+
+.tab-card {
+  background: var(--bg-menu);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  cursor: pointer;
+  transition:
+    transform 0.2s ease,
+    box-shadow 0.2s ease;
+  position: relative;
+}
+
+.tab-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+}
+
+.tab-card.active {
+  box-shadow: 0 0 0 2px var(--color-focus-ring);
+}
+
+.tab-card.closing {
+  animation: cardClose 0.3s ease forwards;
+}
+
+@keyframes cardClose {
+  to {
+    transform: translateY(-50px) scale(0.8);
+    opacity: 0;
+  }
+}
+
+.tab-screenshot {
+  width: 100%;
+  aspect-ratio: 4/3;
+  background: var(--bg-webview);
+  object-fit: cover;
+  object-position: top;
+}
+
+.tab-screenshot-placeholder {
+  width: 100%;
+  aspect-ratio: 4/3;
+  background: var(--bg-webview);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.tab-screenshot-placeholder lucide-icon {
+  font-size: 32px;
+  color: var(--color-text-tertiary);
+  opacity: 0.5;
+}
+
+.tab-info {
+  padding: var(--spacing-sm);
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+}
+
+.tab-favicon {
+  width: 16px;
+  height: 16px;
+  object-fit: contain;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
+.tab-favicon[src=""] {
+  display: none;
+}
+
+.tab-title {
+  flex: 1;
+  font-size: 12px;
+  color: var(--color-text-menu);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.close-button {
+  position: absolute;
+  top: var(--spacing-xs);
+  right: var(--spacing-xs);
+  width: 24px;
+  height: 24px;
+  background: rgba(0, 0, 0, 0.6);
+  border: none;
+  border-radius: 50%;
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.close-button lucide-icon {
+  font-size: 14px;
+}
+
+.home-card {
+  background: transparent;
+  border: 2px dashed var(--color-border);
+  border-radius: var(--radius-md);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition:
+    border-color 0.2s ease,
+    background 0.2s ease;
+  min-height: 120px;
+}
+
+.home-card:hover {
+  border-color: var(--color-focus-ring);
+  background: rgba(0, 122, 255, 0.1);
+}
+
+.home-card lucide-icon {
+  font-size: 32px;
+  color: var(--color-text-tertiary);
+  margin-bottom: var(--spacing-sm);
+}
+
+.home-card span {
+  font-size: 14px;
+  color: var(--color-text-tertiary);
+}

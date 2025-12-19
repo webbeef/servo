@@ -10,7 +10,7 @@ use std::fmt::{Debug, Error, Formatter};
 use base::Epoch;
 use base::id::{PainterId, PipelineId, WebViewId};
 use crossbeam_channel::Sender;
-use embedder_traits::{AnimationState, EventLoopWaker};
+use embedder_traits::{AnimationState, EventLoopWaker, InputEventAndId};
 use euclid::{Rect, Scale, Size2D};
 use log::warn;
 use malloc_size_of_derive::MallocSizeOf;
@@ -38,7 +38,7 @@ use ipc_channel::ipc::{self};
 use profile_traits::mem::{OpaqueSender, ReportsChan};
 use serde::{Deserialize, Serialize};
 pub use webrender_api::ExternalImageSource;
-use webrender_api::units::{DevicePixel, LayoutVector2D, TexelRect};
+use webrender_api::units::{DevicePixel, DeviceRect, LayoutVector2D, TexelRect};
 use webrender_api::{
     BuiltDisplayList, BuiltDisplayListDescriptor, ExternalImage, ExternalImageData,
     ExternalImageHandler, ExternalImageId, ExternalScrollId, FontInstanceFlags, FontInstanceKey,
@@ -184,6 +184,45 @@ pub enum PaintMessage {
     ScreenshotReadinessReponse(WebViewId, FxHashMap<PipelineId, Epoch>),
     /// The candidate of largest-contentful-paint
     SendLCPCandidate(LCPCandidate, WebViewId, PipelineId, Epoch),
+    /// Update the position and size of an embedded webview within its parent webview.
+    /// Used for routing input events to embedded webviews.
+    UpdateEmbeddedWebViewRect {
+        /// The embedded webview's ID.
+        embedded_webview_id: WebViewId,
+        /// The parent webview that contains this embedded webview.
+        parent_webview_id: WebViewId,
+        /// The rect of the embedded webview in device pixels, relative to the parent webview's origin.
+        rect: DeviceRect,
+    },
+    /// Remove tracking for an embedded webview (called when the iframe is removed).
+    RemoveEmbeddedWebView(WebViewId),
+    /// Set whether an embedded webview is hidden (called when display:none is set on the iframe).
+    SetEmbeddedWebViewHidden {
+        /// The embedded webview's ID.
+        embedded_webview_id: WebViewId,
+        /// The parent webview that contains this embedded webview.
+        parent_webview_id: WebViewId,
+        /// Whether the embedded webview should be hidden.
+        hidden: bool,
+    },
+    /// Take an encoded screenshot of an embedded webview. The screenshot is captured, encoded
+    /// to the specified format, and sent back via the provided IPC sender.
+    TakeEncodedScreenshot(
+        WebViewId,
+        embedder_traits::EmbeddedWebViewScreenshotRequest,
+        GenericCallback<
+            Result<
+                embedder_traits::EmbeddedWebViewScreenshotResult,
+                embedder_traits::EmbeddedWebViewScreenshotError,
+            >,
+        >,
+    ),
+    /// Forward an input event to an embedded webview. This is sent from the Constellation
+    /// after the parent webview's script thread determined via DOM hit testing that the
+    /// event target is an embedded iframe element.
+    ForwardInputEventToEmbeddedWebView(WebViewId, InputEventAndId),
+    /// Set page zoom for a webview.
+    SetPageZoom(WebViewId, f32),
 }
 
 impl Debug for PaintMessage {
@@ -515,6 +554,65 @@ impl CrossProcessPaintApi {
             pipeline_id,
             source,
         ));
+    }
+
+    /// Update the position and size of an embedded webview within its parent webview.
+    /// This is used for routing input events to embedded webviews.
+    pub fn update_embedded_webview_rect(
+        &self,
+        embedded_webview_id: WebViewId,
+        parent_webview_id: WebViewId,
+        rect: DeviceRect,
+    ) {
+        let _ = self.0.send(PaintMessage::UpdateEmbeddedWebViewRect {
+            embedded_webview_id,
+            parent_webview_id,
+            rect,
+        });
+    }
+
+    /// Remove tracking for an embedded webview (called when the iframe is removed).
+    pub fn remove_embedded_webview(&self, embedded_webview_id: WebViewId) {
+        let _ = self
+            .0
+            .send(PaintMessage::RemoveEmbeddedWebView(embedded_webview_id));
+    }
+
+    /// Set whether an embedded webview is hidden (called when display:none is set on the iframe).
+    pub fn set_embedded_webview_hidden(
+        &self,
+        embedded_webview_id: WebViewId,
+        parent_webview_id: WebViewId,
+        hidden: bool,
+    ) {
+        let _ = self.0.send(PaintMessage::SetEmbeddedWebViewHidden {
+            embedded_webview_id,
+            parent_webview_id,
+            hidden,
+        });
+    }
+
+    /// Take an encoded screenshot of an embedded webview. The screenshot is captured,
+    /// encoded to the specified format (PNG, JPEG, or WebP), and sent back via the
+    /// provided IPC callback.
+    pub fn request_encoded_screenshot(
+        &self,
+        webview_id: WebViewId,
+        request: embedder_traits::EmbeddedWebViewScreenshotRequest,
+        response_sender: GenericCallback<
+            Result<
+                embedder_traits::EmbeddedWebViewScreenshotResult,
+                embedder_traits::EmbeddedWebViewScreenshotError,
+            >,
+        >,
+    ) {
+        if let Err(error) = self.0.send(PaintMessage::TakeEncodedScreenshot(
+            webview_id,
+            request,
+            response_sender,
+        )) {
+            warn!("Error sending TakeEncodedScreenshot: {error}");
+        }
     }
 }
 

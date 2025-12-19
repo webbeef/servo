@@ -1,0 +1,282 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+
+/* Hide desktop-only elements */
+body.mobile-mode #sidebar {
+  display: none;
+}
+
+body.mobile-mode #header {
+  display: none;
+}
+
+/* Root becomes full-screen container for carousel */
+body.mobile-mode #root {
+  flex: 1;
+  display: block;
+  overflow: hidden;
+  position: relative;
+}
+
+/* Each webview container is full-screen, stacked */
+body.mobile-mode .mobile-webview-container {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: var(--keyboard-offset);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.3s ease, visibility 0.3s ease, bottom 0.3s ease;
+  z-index: var(--z-base);
+}
+
+body.mobile-mode .mobile-webview-container.active {
+  opacity: 1;
+  visibility: visible;
+  z-index: var(--z-base-active);
+}
+
+/* WebView fills container completely */
+body.mobile-mode .mobile-webview-container web-view {
+  width: 100%;
+  height: 100%;
+}
+
+/* Override WebView to hide title bar on mobile */
+body.mobile-mode web-view::part(bar) {
+  display: none;
+}
+
+/* Footer (keyboard) adjustments for mobile */
+body.mobile-mode #footer {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: var(--z-chrome);
+}
+
+/* Mobile action bar adjustments when keyboard is open */
+body.mobile-mode mobile-action-bar {
+  transition: bottom var(--transition-fast) ease;
+}
+
+body.mobile-mode.keyboard-open mobile-action-bar {
+  bottom: var(--keyboard-height);
+}
+
+/* ============================================================================
+   Peek Preview Styles
+   ============================================================================ */
+
+.mobile-peek-preview {
+  position: fixed;
+  top: 0;
+  width: 30%;
+  height: 100%;
+  background: var(--bg-menu);
+  z-index: var(--z-gesture);
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 0 20px rgba(0, 0, 0, 0.5);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.2s ease, visibility 0.2s ease;
+}
+
+.mobile-peek-preview.visible {
+  opacity: 1;
+  visibility: visible;
+}
+
+.mobile-peek-preview.from-left {
+  left: 0;
+  transform: translateX(-100%);
+  border-right: 2px solid var(--color-focus-ring);
+}
+
+.mobile-peek-preview.from-right {
+  right: 0;
+  left: auto;
+  transform: translateX(100%);
+  border-left: 2px solid var(--color-focus-ring);
+}
+
+.peek-header {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  padding: var(--spacing-md);
+  background: var(--bg-header);
+}
+
+.peek-favicon {
+  width: 20px;
+  height: 20px;
+  object-fit: contain;
+  border-radius: 4px;
+}
+
+.peek-favicon[src=""] {
+  display: none;
+}
+
+.peek-title {
+  flex: 1;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-text-menu);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.peek-screenshot {
+  flex: 1;
+  width: 100%;
+  object-fit: cover;
+  object-position: top;
+}
+
+/* ============================================================================
+   Tab Count Indicator (shown during edge swipe)
+   ============================================================================ */
+
+.mobile-tab-indicator {
+  position: fixed;
+  bottom: 60px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 6px;
+  padding: 8px 12px;
+  background: rgba(0, 0, 0, 0.6);
+  border-radius: 16px;
+  z-index: var(--z-gesture);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.2s ease, visibility 0.2s ease;
+}
+
+.mobile-tab-indicator.visible {
+  opacity: 1;
+  visibility: visible;
+}
+
+.tab-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.3);
+  transition: background 0.2s ease, transform 0.2s ease;
+}
+
+.tab-dot.active {
+  background: var(--color-focus-ring);
+  transform: scale(1.2);
+}
+
+/* ============================================================================
+   Transition Animations
+   ============================================================================ */
+
+/* Slide transition between webviews */
+@keyframes slideInFromLeft {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+
+@keyframes slideInFromRight {
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+
+@keyframes slideOutToLeft {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-100%);
+  }
+}
+
+@keyframes slideOutToRight {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(100%);
+  }
+}
+
+body.mobile-mode .mobile-webview-container.slide-in-left {
+  animation: slideInFromLeft 0.3s ease forwards;
+}
+
+body.mobile-mode .mobile-webview-container.slide-in-right {
+  animation: slideInFromRight 0.3s ease forwards;
+}
+
+body.mobile-mode .mobile-webview-container.slide-out-left {
+  animation: slideOutToLeft 0.3s ease forwards;
+}
+
+body.mobile-mode .mobile-webview-container.slide-out-right {
+  animation: slideOutToRight 0.3s ease forwards;
+}
+
+/* ============================================================================
+   Edge Zone Visual Feedback (subtle)
+   ============================================================================ */
+
+.edge-feedback {
+  position: fixed;
+  z-index: var(--z-gesture);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.edge-feedback.active {
+  opacity: 1;
+}
+
+.edge-feedback.left {
+  left: 0;
+  top: 0;
+  width: 4px;
+  height: 100%;
+  background: linear-gradient(to right, var(--color-focus-ring), transparent);
+}
+
+.edge-feedback.right {
+  right: 0;
+  top: 0;
+  width: 4px;
+  height: 100%;
+  background: linear-gradient(to left, var(--color-focus-ring), transparent);
+}
+
+.edge-feedback.bottom {
+  bottom: 0;
+  left: 0;
+  width: 100%;
+  height: 4px;
+  background: linear-gradient(to top, var(--color-focus-ring), transparent);
+}
+
+.edge-feedback.top {
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 4px;
+  background: linear-gradient(to bottom, var(--color-focus-ring), transparent);
+}

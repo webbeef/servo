@@ -114,6 +114,7 @@ use canvas_traits::canvas::{CanvasId, CanvasMsg};
 use canvas_traits::webgl::WebGLThreads;
 use constellation_traits::{
     AuxiliaryWebViewCreationRequest, AuxiliaryWebViewCreationResponse, DocumentState,
+    EmbeddedWebViewCreationRequest, EmbeddedWebViewCreationResponse, EmbeddedWebViewEventType,
     EmbedderToConstellationMessage, IFrameLoadInfo, IFrameLoadInfoWithData, IFrameSizeMsg, Job,
     LoadData, LogEntry, MessagePortMsg, NavigationHistoryBehavior, PaintMetricEvent,
     PortMessageTask, PortTransferInfo, SWManagerMsg, SWManagerSenders, ScreenshotReadinessResponse,
@@ -129,12 +130,12 @@ use devtools_traits::{
 use embedder_traits::resources::{self, Resource};
 use embedder_traits::user_contents::{UserContentManagerId, UserContents};
 use embedder_traits::{
-    AnimationState, EmbedderControlId, EmbedderControlResponse, EmbedderMsg, EmbedderProxy,
-    FocusSequenceNumber, InputEvent, InputEventAndId, JSValue, JavaScriptEvaluationError,
-    JavaScriptEvaluationId, KeyboardEvent, MediaSessionActionType, MediaSessionEvent,
-    MediaSessionPlaybackState, MouseButton, MouseButtonAction, MouseButtonEvent, NewWebViewDetails,
-    PaintHitTestResult, Theme, ViewportDetails, WebDriverCommandMsg, WebDriverLoadStatus,
-    WebDriverScriptCommand,
+    AnimationState, EmbedderControlId, EmbedderControlRequest, EmbedderControlResponse,
+    EmbedderMsg, EmbedderProxy, FocusSequenceNumber, InputEvent, InputEventAndId, JSValue,
+    JavaScriptEvaluationError, JavaScriptEvaluationId, KeyboardEvent, MediaSessionActionType,
+    MediaSessionEvent, MediaSessionPlaybackState, MouseButton, MouseButtonAction, MouseButtonEvent,
+    NewWebViewDetails, PaintHitTestResult, Theme, ViewportDetails, WebDriverCommandMsg,
+    WebDriverLoadStatus, WebDriverScriptCommand,
 };
 use euclid::Size2D;
 use euclid::default::Size2D as UntypedSize2D;
@@ -509,6 +510,19 @@ pub struct Constellation<STF, SWF> {
     /// to the `UserContents` need to be forwared to all the `ScriptThread`s that host
     /// the relevant `WebView`.
     pub(crate) user_contents_for_manager_id: FxHashMap<UserContentManagerId, UserContents>,
+
+    /// Map from embedded WebView ID to the parent iframe's (browsing_context_id, pipeline_id).
+    /// Used to route events from the embedded webview back to the iframe element.
+    embedded_webview_to_iframe: FxHashMap<WebViewId, (BrowsingContextId, PipelineId)>,
+
+    /// The embedded webview that currently has an active IME input focused.
+    /// Set when EmbedderControlShow with InputMethod is received.
+    /// Used by the virtual keyboard to route keystrokes to the correct webview.
+    active_ime_webview: Option<WebViewId>,
+
+    /// Set of script event loop IDs that have registered embedder error listeners.
+    /// Only these event loops will receive DispatchServoError messages.
+    embedder_error_listeners: FxHashSet<ScriptEventLoopId>,
 }
 
 /// State needed to construct a constellation.
@@ -727,6 +741,9 @@ where
                     pending_viewport_changes: Default::default(),
                     screenshot_readiness_requests: Vec::new(),
                     user_contents_for_manager_id: Default::default(),
+                    embedded_webview_to_iframe: FxHashMap::default(),
+                    active_ime_webview: None,
+                    embedder_error_listeners: Default::default(),
                 };
 
                 constellation.run();
@@ -752,6 +769,18 @@ where
     fn clean_up_finished_script_event_loops(&mut self) {
         self.event_loop_join_handles
             .retain(|join_handle| !join_handle.is_finished());
+
+        // Clean up embedder error listeners for event loops that are being dropped.
+        // We collect the IDs of event loops that are still alive, then remove any
+        // listeners not in that set.
+        let live_event_loop_ids: FxHashSet<_> = self
+            .event_loops
+            .iter()
+            .filter_map(|weak| weak.upgrade().map(|el| el.id()))
+            .collect();
+        self.embedder_error_listeners
+            .retain(|id| live_event_loop_ids.contains(id));
+
         self.event_loops
             .retain(|event_loop| event_loop.upgrade().is_some());
     }
@@ -1043,6 +1072,11 @@ where
             .get(&webview_id)
             .and_then(|webview| webview.user_content_manager_id);
 
+        let hide_focus = self
+            .webviews
+            .get(&webview_id)
+            .is_some_and(|webview| webview.hide_focus);
+
         let new_pipeline_info = NewPipelineInfo {
             parent_info: parent_pipeline_id,
             new_pipeline_id,
@@ -1053,6 +1087,8 @@ where
             viewport_details: initial_viewport_details,
             user_content_manager_id,
             theme,
+            is_embedded_webview: self.embedded_webview_to_iframe.contains_key(&webview_id),
+            hide_focus,
         };
         let pipeline = match Pipeline::spawn(new_pipeline_info, event_loop, self, throttled) {
             Ok(pipeline) => pipeline,
@@ -1524,11 +1560,7 @@ where
                 }
             },
             EmbedderToConstellationMessage::PreferencesUpdated(updates) => {
-                let event_loops = self
-                    .pipelines
-                    .values()
-                    .map(|pipeline| pipeline.event_loop.clone());
-                for event_loop in event_loops {
+                for event_loop in self.event_loops() {
                     let _ = event_loop.send(ScriptThreadMessage::PreferencesUpdated(
                         updates
                             .iter()
@@ -1551,6 +1583,18 @@ where
             },
             EmbedderToConstellationMessage::UpdatePinchZoomInfos(pipeline_id, pinch_zoom) => {
                 self.handle_update_pinch_zoom_infos(pipeline_id, pinch_zoom);
+            },
+            EmbedderToConstellationMessage::NotifyServoError(error_type, message) => {
+                // Broadcast error only to script threads that have registered
+                // embedder error listeners
+                for event_loop in self.event_loops() {
+                    if self.embedder_error_listeners.contains(&event_loop.id()) {
+                        let _ = event_loop.send(ScriptThreadMessage::DispatchServoError(
+                            error_type.clone(),
+                            message.clone(),
+                        ));
+                    }
+                }
             },
         }
     }
@@ -1734,6 +1778,12 @@ where
                 self.broadcast_channels
                     .remove_broadcast_channel_router(router_id);
             },
+            ScriptToConstellationMessage::RegisterEmbedderErrorListener(event_loop_id) => {
+                self.embedder_error_listeners.insert(event_loop_id);
+            },
+            ScriptToConstellationMessage::UnregisterEmbedderErrorListener(event_loop_id) => {
+                self.embedder_error_listeners.remove(&event_loop_id);
+            },
             ScriptToConstellationMessage::ScheduleBroadcast(router_id, message) => {
                 if self
                     .check_origin_against_pipeline(&source_pipeline_id, &message.origin)
@@ -1763,6 +1813,12 @@ where
             },
             ScriptToConstellationMessage::CreateAuxiliaryWebView(load_info) => {
                 self.handle_script_new_auxiliary(load_info);
+            },
+            ScriptToConstellationMessage::CreateEmbeddedWebView(request) => {
+                self.handle_create_embedded_webview(request);
+            },
+            ScriptToConstellationMessage::RemoveEmbeddedWebView(webview_id) => {
+                self.handle_close_top_level_browsing_context(webview_id);
             },
             ScriptToConstellationMessage::ChangeRunningAnimationsState(animation_state) => {
                 self.handle_change_running_animations_state(source_pipeline_id, animation_state)
@@ -1930,6 +1986,23 @@ where
                     new_value,
                 );
             },
+            ScriptToConstellationMessage::BroadcastPreferenceChange(name, value) => {
+                // Broadcast preference change to all script threads
+                let updates = vec![(name.clone(), value.clone())];
+                for event_loop in self.event_loops() {
+                    let _ =
+                        event_loop.send(ScriptThreadMessage::PreferencesUpdated(updates.clone()));
+                }
+
+                // For namespaced (embedder) preferences, also notify the embedder process
+                // so it can invoke the registered setter callback to persist the preference.
+                // This is essential in multiprocess mode where the setter callback is only
+                // registered in the main (embedder) process.
+                if name.contains('.') {
+                    self.embedder_proxy
+                        .send(EmbedderMsg::EmbedderPreferenceChanged(name, value));
+                }
+            },
             ScriptToConstellationMessage::MediaSessionEvent(pipeline_id, event) => {
                 // Unlikely at this point, but we may receive events coming from
                 // different media sessions, so we set the active media session based
@@ -1997,6 +2070,129 @@ where
             },
             ScriptToConstellationMessage::RespondToScreenshotReadinessRequest(response) => {
                 self.handle_screenshot_readiness_response(source_pipeline_id, response);
+            },
+            ScriptToConstellationMessage::EmbeddedWebViewNotification(event) => {
+                self.handle_embedded_webview_notification(webview_id, event);
+            },
+            ScriptToConstellationMessage::EmbeddedWebViewLoad(embedded_webview_id, url) => {
+                // Only allow if this is a valid embedded webview
+                let ctx_id = BrowsingContextId::from(embedded_webview_id);
+                let pipeline_id = match self.browsing_contexts.get(&ctx_id) {
+                    Some(ctx) => ctx.pipeline_id,
+                    None => {
+                        return warn!(
+                            "EmbeddedWebViewLoad for unknown browsing context {:?}",
+                            embedded_webview_id
+                        );
+                    },
+                };
+                let load_data = LoadData::new_for_new_unrelated_webview(url);
+                self.load_url(
+                    embedded_webview_id,
+                    pipeline_id,
+                    load_data,
+                    NavigationHistoryBehavior::Push,
+                );
+            },
+            ScriptToConstellationMessage::EmbeddedWebViewReload(embedded_webview_id) => {
+                // Only allow if this is a valid embedded webview
+                if self.webviews.contains_key(&embedded_webview_id) {
+                    self.handle_reload_msg(embedded_webview_id);
+                } else {
+                    warn!(
+                        "EmbeddedWebViewReload for unknown or non-embedded webview {:?}",
+                        embedded_webview_id
+                    );
+                }
+            },
+            ScriptToConstellationMessage::EmbeddedWebViewTraverseHistory(
+                embedded_webview_id,
+                direction,
+                traversal_id,
+            ) => {
+                // Only allow if this is a valid embedded webview
+                if self.webviews.contains_key(&embedded_webview_id) {
+                    self.handle_traverse_history_msg(embedded_webview_id, direction);
+                    // Notify the embedded webview parent about traversal completion
+                    self.handle_embedded_webview_notification(
+                        embedded_webview_id,
+                        EmbeddedWebViewEventType::HistoryTraversalComplete(traversal_id),
+                    );
+                } else {
+                    warn!(
+                        "EmbeddedWebViewTraverseHistory for unknown or non-embedded webview {:?}",
+                        embedded_webview_id
+                    );
+                }
+            },
+            ScriptToConstellationMessage::EmbeddedWebViewTakeScreenshot(
+                embedded_webview_id,
+                request,
+                response_sender,
+            ) => {
+                // Only allow if this is a valid embedded webview
+                if self.webviews.contains_key(&embedded_webview_id) {
+                    self.paint_proxy
+                        .cross_process_paint_api
+                        .request_encoded_screenshot(embedded_webview_id, request, response_sender);
+                } else {
+                    let _ = response_sender.send(Err(
+                        embedder_traits::EmbeddedWebViewScreenshotError::WebViewDoesNotExist,
+                    ));
+                }
+            },
+            ScriptToConstellationMessage::ForwardEventToEmbeddedWebView(
+                embedded_webview_id,
+                event,
+            ) => {
+                // Forward the input event to the embedded webview via Paint.
+                // This is called after the parent webview's script thread determined
+                // via DOM hit testing that the event target is an embedded iframe.
+                if self.webviews.contains_key(&embedded_webview_id) {
+                    self.paint_proxy
+                        .send(PaintMessage::ForwardInputEventToEmbeddedWebView(
+                            embedded_webview_id,
+                            event,
+                        ));
+                }
+            },
+            ScriptToConstellationMessage::EmbeddedWebViewControlResponse(id, response) => {
+                // Route the control response to the embedded webview's script thread.
+                // This is sent from the parent shell after user interaction with a custom control UI.
+                self.handle_embedder_control_response(id, response);
+            },
+            ScriptToConstellationMessage::EmbeddedWebViewSetPageZoom(embedded_webview_id, zoom) => {
+                // Validate this is a known embedded webview
+                let ctx_id = BrowsingContextId::from(embedded_webview_id);
+                if self.browsing_contexts.get(&ctx_id).is_none() {
+                    return warn!(
+                        "EmbeddedWebViewSetPageZoom for unknown browsing context {:?}",
+                        embedded_webview_id
+                    );
+                }
+                // Send to Paint component
+                self.paint_proxy
+                    .send(PaintMessage::SetPageZoom(embedded_webview_id, zoom));
+            },
+            ScriptToConstellationMessage::InjectInputToActiveIme(event) => {
+                // Route the input event to the webview that currently has an active IME input.
+                // This is used by the virtual keyboard to send keystrokes to the focused input field.
+                if let Some(target_webview_id) = self.active_ime_webview {
+                    self.forward_input_event(target_webview_id, event, None);
+                } else {
+                    debug!("InjectInputToActiveIme called but no active IME webview is tracked");
+                }
+            },
+            ScriptToConstellationMessage::SetActiveImeWebView(webview_id) => {
+                // Set the active IME webview for virtual keyboard input routing.
+                // Used when the system webview (non-embedded) shows an input method control.
+                self.active_ime_webview = Some(webview_id);
+            },
+            ScriptToConstellationMessage::ClearActiveImeWebView(webview_id) => {
+                // Clear the active IME webview when the system webview hides an input method control.
+                if self.active_ime_webview == Some(webview_id) {
+                    self.active_ime_webview = None;
+                }
             },
         }
     }
@@ -3096,6 +3292,13 @@ where
     /// <https://html.spec.whatwg.org/multipage/#destroy-a-top-level-traversable>
     fn handle_close_top_level_browsing_context(&mut self, webview_id: WebViewId) {
         debug!("{webview_id}: Closing");
+
+        // Notify embedded webview parent before closing (if this is an embedded webview)
+        self.handle_embedded_webview_notification(webview_id, EmbeddedWebViewEventType::Closed);
+
+        // Clean up the embedded webview mapping
+        self.embedded_webview_to_iframe.remove(&webview_id);
+
         let browsing_context_id = BrowsingContextId::from(webview_id);
         // Step 5. Remove traversable from the user agent's top-level traversable set.
         let browsing_context =
@@ -3372,8 +3575,27 @@ where
             opener_webview_id,
             opener_pipeline_id,
             response_sender,
+            target_url,
         } = load_info;
 
+        // Check if the opener is an embedded webview
+        if self
+            .embedded_webview_to_iframe
+            .contains_key(&opener_webview_id)
+        {
+            // For embedded webviews, create a new embedded webview and notify the parent
+            // browserhtml shell to create an <iframe embed> that adopts it.
+            self.handle_embedded_auxiliary(
+                load_data,
+                opener_webview_id,
+                opener_pipeline_id,
+                response_sender,
+                target_url,
+            );
+            return;
+        }
+
+        // For normal webviews, use the blocking flow
         let Some((webview_id_sender, webview_id_receiver)) = generic_channel::channel() else {
             warn!("Failed to create channel");
             let _ = response_sender.send(None);
@@ -3469,6 +3691,359 @@ where
             }),
             viewport_details,
         });
+    }
+
+    /// Handle a request to create an embedded webview (from an iframe with "embed" attribute).
+    /// This creates a new top-level WebView with its own WebViewId, similar to auxiliary webviews.
+    fn handle_create_embedded_webview(&mut self, request: EmbeddedWebViewCreationRequest) {
+        let EmbeddedWebViewCreationRequest {
+            load_data,
+            parent_pipeline_id,
+            parent_webview_id,
+            viewport_details,
+            theme: _theme,
+            hide_focus,
+            response_sender,
+        } = request;
+
+        // Request a new WebView ID from the embedder using the embedded webview message.
+        // Unlike regular popups, embedded webviews should not create new tabs in the UI.
+        let Some((webview_id_sender, webview_id_receiver)) = generic_channel::channel() else {
+            warn!("Failed to create channel for embedded webview");
+            let _ = response_sender.send(None);
+            return;
+        };
+        self.embedder_proxy
+            .send(EmbedderMsg::AllowOpeningEmbeddedWebView(
+                parent_webview_id,
+                webview_id_sender,
+            ));
+        let NewWebViewDetails {
+            webview_id: new_webview_id,
+            viewport_details: embedded_viewport_details,
+            user_content_manager_id,
+        } = match webview_id_receiver.recv() {
+            Ok(Some(new_webview_details)) => new_webview_details,
+            Ok(None) | Err(_) => {
+                debug!("Embedder rejected embedded webview creation");
+                let _ = response_sender.send(None);
+                return;
+            },
+        };
+        let new_browsing_context_id = BrowsingContextId::from(new_webview_id);
+
+        let (script_sender, parent_browsing_context_id) =
+            match self.pipelines.get(&parent_pipeline_id) {
+                Some(pipeline) => (pipeline.event_loop.clone(), pipeline.browsing_context_id),
+                None => {
+                    warn!(
+                        "{}: Embedded webview created in closed parent pipeline",
+                        parent_pipeline_id
+                    );
+                    let _ = response_sender.send(None);
+                    return;
+                },
+            };
+        let (is_parent_private, is_parent_throttled, is_parent_secure) =
+            match self.browsing_contexts.get(&parent_browsing_context_id) {
+                Some(ctx) => (ctx.is_private, ctx.throttled, ctx.inherited_secure_context),
+                None => {
+                    warn!(
+                        "{}: Embedded webview {} created in closed parent browsing context",
+                        parent_browsing_context_id, new_browsing_context_id,
+                    );
+                    let _ = response_sender.send(None);
+                    return;
+                },
+            };
+
+        let new_pipeline_id = PipelineId::new();
+        let pipeline = Pipeline::new_already_spawned(
+            new_pipeline_id,
+            new_browsing_context_id,
+            new_webview_id,
+            None, // No opener for embedded webviews - they are isolated
+            script_sender,
+            self.paint_proxy.clone(),
+            is_parent_throttled,
+            load_data,
+        );
+
+        // Send the response before adding to constellation state
+        let _ = response_sender.send(Some(EmbeddedWebViewCreationResponse {
+            new_webview_id,
+            new_browsing_context_id,
+            new_pipeline_id,
+            user_content_manager_id,
+        }));
+
+        // Track this as an embedded webview
+        self.embedded_webview_to_iframe.insert(
+            new_webview_id,
+            (new_browsing_context_id, parent_pipeline_id),
+        );
+
+        assert!(!self.pipelines.contains_key(&new_pipeline_id));
+        self.pipelines.insert(new_pipeline_id, pipeline);
+        self.webviews.insert(
+            new_webview_id,
+            ConstellationWebView::new_with_hide_focus(
+                new_webview_id,
+                new_browsing_context_id,
+                user_content_manager_id,
+                hide_focus,
+            ),
+        );
+
+        // Create a new browsing context group for embedded webviews (they are fully isolated)
+        let bc_group_id = BrowsingContextGroupId(self.browsing_context_group_next_id);
+        self.browsing_context_group_next_id += 1;
+        let mut bc_group = BrowsingContextGroup::default();
+        bc_group
+            .top_level_browsing_context_set
+            .insert(new_webview_id);
+        self.browsing_context_group_set
+            .insert(bc_group_id, bc_group);
+
+        // Use the viewport details from the request if the embedder didn't provide specific ones
+        let final_viewport_details = if embedded_viewport_details.size.width > 0.0 {
+            embedded_viewport_details
+        } else {
+            viewport_details
+        };
+
+        self.add_pending_change(SessionHistoryChange {
+            webview_id: new_webview_id,
+            browsing_context_id: new_browsing_context_id,
+            new_pipeline_id,
+            replace: None,
+            new_browsing_context_info: Some(NewBrowsingContextInfo {
+                // Embedded webviews need parent_pipeline_id for rendering hierarchy,
+                // but they are treated as top-level for window.parent purposes.
+                parent_pipeline_id: Some(parent_pipeline_id),
+                is_private: is_parent_private,
+                inherited_secure_context: is_parent_secure,
+                throttled: is_parent_throttled,
+            }),
+            viewport_details: final_viewport_details,
+        });
+
+        debug!(
+            "Created embedded webview {} with pipeline {} for iframe in {}",
+            new_webview_id, new_pipeline_id, parent_pipeline_id
+        );
+    }
+
+    /// Handle a `window.open()` request from an embedded webview.
+    /// This creates a new embedded webview and notifies the parent browserhtml shell
+    /// to create an `<iframe embed>` that adopts the pre-created webview.
+    #[allow(clippy::too_many_arguments)]
+    fn handle_embedded_auxiliary(
+        &mut self,
+        load_data: LoadData,
+        opener_webview_id: WebViewId,
+        opener_pipeline_id: PipelineId,
+        response_sender: GenericSender<Option<AuxiliaryWebViewCreationResponse>>,
+        target_url: Option<ServoUrl>,
+    ) {
+        // Find the parent webview (browserhtml shell) that contains this embedded webview
+        let Some(&(_, parent_pipeline_id)) =
+            self.embedded_webview_to_iframe.get(&opener_webview_id)
+        else {
+            warn!(
+                "Cannot find parent pipeline for embedded webview {}",
+                opener_webview_id
+            );
+            let _ = response_sender.send(None);
+            return;
+        };
+
+        let Some(parent_pipeline) = self.pipelines.get(&parent_pipeline_id) else {
+            warn!(
+                "Parent pipeline {} not found for embedded webview {}",
+                parent_pipeline_id, opener_webview_id
+            );
+            let _ = response_sender.send(None);
+            return;
+        };
+        let parent_webview_id = parent_pipeline.webview_id;
+
+        // Request a new WebView ID from the embedder
+        let Some((webview_id_sender, webview_id_receiver)) = generic_channel::channel() else {
+            warn!("Failed to create channel for embedded auxiliary webview");
+            let _ = response_sender.send(None);
+            return;
+        };
+        self.embedder_proxy
+            .send(EmbedderMsg::AllowOpeningEmbeddedWebView(
+                parent_webview_id,
+                webview_id_sender,
+            ));
+        let NewWebViewDetails {
+            webview_id: new_webview_id,
+            viewport_details,
+            user_content_manager_id,
+        } = match webview_id_receiver.recv() {
+            Ok(Some(new_webview_details)) => new_webview_details,
+            Ok(None) | Err(_) => {
+                let _ = response_sender.send(None);
+                return;
+            },
+        };
+        let new_browsing_context_id = BrowsingContextId::from(new_webview_id);
+
+        // Get opener pipeline info
+        let (script_sender, opener_browsing_context_id) =
+            match self.pipelines.get(&opener_pipeline_id) {
+                Some(pipeline) => (pipeline.event_loop.clone(), pipeline.browsing_context_id),
+                None => {
+                    warn!(
+                        "{}: Embedded auxiliary loaded url in closed pipeline",
+                        opener_pipeline_id
+                    );
+                    let _ = response_sender.send(None);
+                    return;
+                },
+            };
+        let (is_opener_private, is_opener_throttled, is_opener_secure) =
+            match self.browsing_contexts.get(&opener_browsing_context_id) {
+                Some(ctx) => (ctx.is_private, ctx.throttled, ctx.inherited_secure_context),
+                None => {
+                    warn!(
+                        "{}: Embedded auxiliary {} loaded in closed opener browsing context",
+                        opener_browsing_context_id, new_browsing_context_id,
+                    );
+                    let _ = response_sender.send(None);
+                    return;
+                },
+            };
+
+        let new_pipeline_id = PipelineId::new();
+        // Capture the URL before load_data is moved into the pipeline
+        let load_url = target_url.unwrap_or_else(|| load_data.url.clone());
+        let pipeline = Pipeline::new_already_spawned(
+            new_pipeline_id,
+            new_browsing_context_id,
+            new_webview_id,
+            Some(opener_browsing_context_id), // Set opener for window.opener support
+            script_sender,
+            self.paint_proxy.clone(),
+            is_opener_throttled,
+            load_data,
+        );
+
+        // Send the response to script so window.open() returns a proper WindowProxy
+        let _ = response_sender.send(Some(AuxiliaryWebViewCreationResponse {
+            new_webview_id,
+            new_pipeline_id,
+            user_content_manager_id,
+        }));
+
+        // Track this as an embedded webview (inheriting from the opener's embedded status)
+        self.embedded_webview_to_iframe.insert(
+            new_webview_id,
+            (new_browsing_context_id, parent_pipeline_id),
+        );
+
+        assert!(!self.pipelines.contains_key(&new_pipeline_id));
+        self.pipelines.insert(new_pipeline_id, pipeline);
+        self.webviews.insert(
+            new_webview_id,
+            ConstellationWebView::new(
+                new_webview_id,
+                new_browsing_context_id,
+                user_content_manager_id,
+            ),
+        );
+
+        // Create a new browsing context group for the new embedded webview
+        let bc_group_id = BrowsingContextGroupId(self.browsing_context_group_next_id);
+        self.browsing_context_group_next_id += 1;
+        let mut bc_group = BrowsingContextGroup::default();
+        bc_group
+            .top_level_browsing_context_set
+            .insert(new_webview_id);
+        self.browsing_context_group_set
+            .insert(bc_group_id, bc_group);
+
+        self.add_pending_change(SessionHistoryChange {
+            webview_id: new_webview_id,
+            browsing_context_id: new_browsing_context_id,
+            new_pipeline_id,
+            replace: None,
+            new_browsing_context_info: Some(NewBrowsingContextInfo {
+                parent_pipeline_id: Some(parent_pipeline_id),
+                is_private: is_opener_private,
+                inherited_secure_context: is_opener_secure,
+                throttled: is_opener_throttled,
+            }),
+            viewport_details,
+        });
+
+        // Notify the parent browserhtml shell to create an <iframe embed> that adopts this webview
+        self.embedder_proxy
+            .send(EmbedderMsg::EmbeddedWebViewCreated(
+                parent_webview_id,
+                new_webview_id,
+                new_browsing_context_id,
+                new_pipeline_id,
+                load_url,
+            ));
+
+        debug!(
+            "Created embedded auxiliary webview {} with pipeline {} from opener {}",
+            new_webview_id, new_pipeline_id, opener_webview_id
+        );
+    }
+
+    /// Handle a notification from an embedded webview that should be forwarded
+    /// to its parent iframe element as a DOM event.
+    fn handle_embedded_webview_notification(
+        &mut self,
+        webview_id: WebViewId,
+        event: EmbeddedWebViewEventType,
+    ) {
+        // Track the active IME webview for virtual keyboard input routing
+        match &event {
+            EmbeddedWebViewEventType::EmbedderControlShow { request, .. } => {
+                if matches!(request, EmbedderControlRequest::InputMethod { .. }) {
+                    self.active_ime_webview = Some(webview_id);
+                }
+            },
+            EmbeddedWebViewEventType::EmbedderControlHide { .. } => {
+                // Clear the active IME webview when any control is hidden
+                // (we could track control IDs to be more precise, but this is simpler)
+                if self.active_ime_webview == Some(webview_id) {
+                    self.active_ime_webview = None;
+                }
+            },
+            _ => {},
+        }
+
+        // Check if this webview is embedded
+        let Some(&(browsing_context_id, parent_pipeline_id)) =
+            self.embedded_webview_to_iframe.get(&webview_id)
+        else {
+            // Not an embedded webview, ignore the notification
+            return;
+        };
+
+        // Forward to parent pipeline's script thread
+        let Some(pipeline) = self.pipelines.get(&parent_pipeline_id) else {
+            warn!(
+                "Parent pipeline {:?} not found for embedded webview {:?}",
+                parent_pipeline_id, webview_id
+            );
+            return;
+        };
+
+        let _ = pipeline
+            .event_loop
+            .send(ScriptThreadMessage::DispatchEmbeddedWebViewEvent {
+                target: browsing_context_id,
+                parent: parent_pipeline_id,
+                event,
+            });
     }
 
     #[servo_tracing::instrument(skip_all)]
@@ -4570,7 +5145,7 @@ where
     }
 
     #[servo_tracing::instrument(skip_all)]
-    fn notify_history_changed(&self, webview_id: WebViewId) {
+    fn notify_history_changed(&mut self, webview_id: WebViewId) {
         // Send a flat projection of the history to embedder.
         // The final vector is a concatenation of the URLs of the past
         // entries, the current entry and the future entries.
@@ -4673,9 +5248,23 @@ where
         );
         self.embedder_proxy.send(EmbedderMsg::HistoryChanged(
             webview_id,
-            entries,
+            entries.clone(),
             current_index,
         ));
+
+        // Notify embedded webview parent if this is an embedded webview
+        // First send the full history for tracking can_go_back/can_go_forward
+        self.handle_embedded_webview_notification(
+            webview_id,
+            EmbeddedWebViewEventType::HistoryChanged(entries.clone(), current_index),
+        );
+        // Then send the URL change event
+        if let Some(current_url) = entries.get(current_index) {
+            self.handle_embedded_webview_notification(
+                webview_id,
+                EmbeddedWebViewEventType::UrlChanged(current_url.clone()),
+            );
+        }
     }
 
     #[servo_tracing::instrument(skip_all)]

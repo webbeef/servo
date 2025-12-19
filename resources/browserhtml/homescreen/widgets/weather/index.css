@@ -1,0 +1,38 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+
+body {
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  font-family: var(--font-family-base);
+  color: var(--color-text-menu);
+}
+
+.weather-widget {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-md);
+  padding: var(--spacing-md);
+  background: var(--bg-surface);
+  border-radius: var(--radius-lg);
+}
+
+.weather-icon lucide-icon {
+  font-size: 48px;
+  opacity: 0.9;
+}
+
+.temperature {
+  font-size: 32px;
+  font-weight: bold;
+}
+
+.condition {
+  font-size: 14px;
+  opacity: 0.8;
+}
+
+.location {
+  font-size: 12px;
+  opacity: 0.6;
+}

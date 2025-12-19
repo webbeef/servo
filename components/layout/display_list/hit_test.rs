@@ -321,6 +321,16 @@ impl Fragment {
                     Cursor::Text,
                 )
             },
+            Fragment::IFrame(iframe) => {
+                let iframe = &*iframe.borrow();
+                hit_test_fragment_inner(
+                    &iframe.base.style(),
+                    iframe.base.rect,
+                    BorderRadius::zero(),
+                    iframe.base.flags,
+                    Cursor::Default,
+                )
+            },
             _ => false,
         }
     }

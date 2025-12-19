@@ -47,3 +47,5 @@ partial interface HTMLIFrameElement {
   // [CEReactions, LegacyNullToEmptyString]
   // attribute DOMString marginWidth;
 };
+
+HTMLIFrameElement includes EmbeddedWebView;

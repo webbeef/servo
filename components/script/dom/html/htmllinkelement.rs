@@ -666,7 +666,7 @@ impl HTMLLinkElement {
         if !window.is_top_level() {
             return;
         }
-        let Ok(href) = self.Href().parse() else {
+        let Ok(href) = self.Href().parse::<ServoUrl>() else {
             return;
         };
 

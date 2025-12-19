@@ -94,9 +94,11 @@ impl DebuggerGlobalScope {
                 None,
                 #[cfg(feature = "webgpu")]
                 gpu_id_hub,
-                None,
-                false,
-                None, // font_context
+                None,  // inherited_secure_context
+                false, // unminify_js
+                false, // is_embedded_webview
+                false, // hide_focus - debugger has no focus
+                None,  // font_context
             ),
             devtools_to_script_sender,
             get_possible_breakpoints_result_sender: RefCell::new(None),

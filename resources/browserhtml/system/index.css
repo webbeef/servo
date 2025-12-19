@@ -1,0 +1,275 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+
+:root {
+  --sidebar-width: 2em;
+  --keyboard-height: 220px;
+
+  /* Z-index layers */
+  --z-base: 1;
+  --z-base-active: 10;
+  --z-local-ui: 100;
+  --z-panel: 500;
+  --z-dialog: 1000;
+  --z-gesture: 5000;
+  --z-chrome: 6000;
+  --z-sheet: 7000;
+  --z-modal: 8000;
+
+  /* Keyboard offset - set to keyboard height when keyboard is open */
+  --keyboard-offset: 0px;
+}
+
+body.keyboard-open {
+  --keyboard-offset: var(--keyboard-height);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  padding: 0;
+  margin: 0;
+  height: 100%;
+  width: 100%;
+  font-family: var(--font-family-base);
+}
+
+body {
+  padding: 0;
+  margin: 0;
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  color: var(--color-text-menu);
+}
+
+#header {
+  height: var(--size-header-height);
+  padding: var(--spacing-xs) var(--spacing-sm);
+  width: fit-content;
+  background: var(--bg-header);
+  font-weight: var(--font-weight-bold);
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  cursor: default;
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  /* switch back (permanently?) to a regular OS provided window frame */
+  display: none;
+}
+
+#header img {
+  width: var(--size-icon);
+}
+
+#header .close {
+  cursor: pointer;
+}
+
+#header .resize {
+  cursor: nw-resize;
+}
+
+main {
+  display: flex;
+  background: var(--bg-main);
+  height: 100%;
+}
+
+#sidebar {
+  display: flex;
+  flex-direction: column;
+  padding: var(--spacing-xs);
+  gap: var(--spacing-xs);
+  width: var(--sidebar-width);
+}
+
+#views-icons {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xs);
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.view-icon {
+  width: 1.5em;
+  height: 1.5em;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-webview);
+  border: 2px solid transparent;
+  transition: border-color var(--transition-fast), opacity var(--transition-fast);
+  opacity: var(--opacity-muted);
+}
+
+.view-icon:hover {
+  opacity: 1;
+}
+
+.view-icon.active {
+  border-color: var(--color-focus-ring);
+  opacity: 1;
+}
+
+.view-icon-img {
+  width: 1em;
+  height: 1em;
+  object-fit: contain;
+}
+
+.view-icon-img[src=""] {
+  display: none;
+}
+
+.sidebar-preview {
+  position: fixed;
+  z-index: var(--z-dialog);
+  background: var(--bg-menu);
+  border-radius: var(--radius-md);
+  box-shadow: 0 4px 16px var(--color-shadow-menu);
+  padding: var(--spacing-sm);
+  width: 200px;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateX(-8px);
+  transition: opacity var(--transition-fast), transform var(--transition-fast), visibility var(--transition-fast);
+  pointer-events: none;
+}
+
+.sidebar-preview.visible {
+  opacity: 1;
+  visibility: visible;
+  transform: translateX(0);
+}
+
+.sidebar-preview-title {
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-bold);
+  margin-bottom: var(--spacing-xs);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sidebar-preview-screenshot {
+  width: 100%;
+  height: auto;
+  border-radius: var(--radius-sm);
+  display: block;
+}
+
+lucide-icon {
+  font-size: var(--size-icon-sm);
+  cursor: pointer;
+  font-weight: var(--font-weight-bold);
+}
+
+#root {
+  flex: 1;
+  display: flex;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scroll-behavior: smooth;
+  scroll-snap-type: x mandatory;
+  position: relative; /* For overview overlay positioning */
+}
+
+#footer {
+  display: none; /* Hidden by default, shown when keyboard is active */
+  height: var(--keyboard-height);
+  padding: 0;
+  background: var(--bg-footer);
+}
+
+#footer.visible {
+  display: block;
+}
+
+#keyboard-frame {
+  width: 100%;
+  height: 100%;
+  border: none;
+}
+
+/* Each panel is a full-viewport-width container that holds a split tree */
+.panel {
+  position: relative; /* For absolutely positioned resize handles */
+  display: grid;
+  gap: var(--spacing-sm);
+  width: calc(100vw - var(--sidebar-width));
+  height: 100%;
+  scroll-snap-align: start;
+  padding: var(--spacing-sm);
+  /* Grid template is set dynamically by LayoutManager */
+}
+
+/* Disable pointer events on webviews during resize */
+body.resizing web-view {
+  pointer-events: none;
+}
+
+/* Resize handles between split views */
+.resize-handle {
+  z-index: var(--z-local-ui);
+  background: transparent;
+  transition: background var(--transition-fast);
+}
+
+.resize-handle:hover {
+  background: var(--color-resize-handle-hover);
+}
+
+.resize-handle-horizontal {
+  cursor: col-resize;
+}
+
+.resize-handle-vertical {
+  cursor: row-resize;
+}
+
+#notifications-icon-container {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: var(--spacing-xs) 0;
+}
+
+#notifications-icon {
+  opacity: var(--opacity-muted);
+  transition: opacity var(--transition-fast);
+}
+
+#notifications-icon-container:hover #notifications-icon {
+  opacity: 1;
+}
+
+#notifications-badge {
+  position: absolute;
+  top: 0;
+  right: -0.1em;
+  min-width: 1em;
+  height: 1em;
+  border-radius: 0.5em;
+  background: var(--color-danger);
+  color: var(--color-text-on-header);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-bold);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 var(--spacing-xs);
+}
+
+#notifications-badge.hidden {
+  display: none;
+}

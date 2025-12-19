@@ -1,0 +1,8 @@
+[
+  {
+    "id": "weather",
+    "url": "widgets/weather/index.html",
+    "width": "100%",
+    "height": "120px"
+  }
+]

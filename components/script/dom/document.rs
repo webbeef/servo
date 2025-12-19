@@ -14,12 +14,14 @@ use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
 
 use base::cross_process_instant::CrossProcessInstant;
-use base::generic_channel::GenericSend;
+use base::generic_channel::{GenericSend, GenericSharedMemory};
 use base::id::WebViewId;
 use base::{Epoch, generic_channel};
 use bitflags::bitflags;
 use chrono::Local;
-use constellation_traits::{NavigationHistoryBehavior, ScriptToConstellationMessage};
+use constellation_traits::{
+    EmbeddedWebViewEventType, NavigationHistoryBehavior, ScriptToConstellationMessage,
+};
 use content_security_policy::sandboxing_directive::SandboxingFlagSet;
 use content_security_policy::{CspList, PolicyDisposition};
 use cookie::Cookie;
@@ -31,6 +33,7 @@ use embedder_traits::{
     Image, LoadStatus,
 };
 use encoding_rs::{Encoding, UTF_8};
+use euclid::Size2D;
 use fonts::WebFontDocumentContext;
 use html5ever::{LocalName, Namespace, QualName, local_name, ns};
 use hyper_serde::Serde;
@@ -611,6 +614,9 @@ pub(crate) struct Document {
     #[ignore_malloc_size_of = "TODO: unimplemented on Image"]
     favicon: RefCell<Option<Image>>,
 
+    /// The cached theme color for that document.
+    theme_color: RefCell<Option<String>>,
+
     /// All websockets created that are associated with this document.
     websockets: DOMTracker<WebSocket>,
 
@@ -843,6 +849,12 @@ impl Document {
 
         // Set the document's activity level, reflow if necessary, and suspend or resume timers.
         self.activity.set(activity);
+
+        // When document becomes inactive, hide all embedder controls (keyboard, etc.)
+        if activity == DocumentActivity::Inactive {
+            self.embedder_controls().hide_all_controls();
+        }
+
         let media = ServoMedia::get();
         let pipeline_id = self.window().pipeline_id();
         let client_context_id =
@@ -856,6 +868,7 @@ impl Document {
 
         self.title_changed();
         self.notify_embedder_favicon();
+        self.notify_embedder_theme_color();
         self.dirty_all_nodes();
         self.window().resume(can_gc);
         media.resume(&client_context_id);
@@ -1242,6 +1255,9 @@ impl Document {
                         LoadStatus::Started,
                     ));
                     self.send_to_embedder(EmbedderMsg::Status(self.webview_id(), None));
+                    self.notify_embedded_webview_parent(
+                        EmbeddedWebViewEventType::LoadStatusChanged(LoadStatus::Started),
+                    );
                 }
             },
             DocumentReadyState::Complete => {
@@ -1250,6 +1266,9 @@ impl Document {
                         self.webview_id(),
                         LoadStatus::Complete,
                     ));
+                    self.notify_embedded_webview_parent(
+                        EmbeddedWebViewEventType::LoadStatusChanged(LoadStatus::Complete),
+                    );
                 }
                 update_with_current_instant(&self.dom_complete);
             },
@@ -1658,13 +1677,31 @@ impl Document {
         let window = self.window();
         if window.is_top_level() {
             let title = self.title().map(String::from);
-            self.send_to_embedder(EmbedderMsg::ChangePageTitle(self.webview_id(), title));
+            self.send_to_embedder(EmbedderMsg::ChangePageTitle(
+                self.webview_id(),
+                title.clone(),
+            ));
+            // Also notify parent iframe if this is an embedded webview.
+            // The constellation will filter and only forward if this is actually an embedded webview.
+            self.notify_embedded_webview_parent(EmbeddedWebViewEventType::TitleChanged(title));
         }
     }
 
     pub(crate) fn send_to_embedder(&self, msg: EmbedderMsg) {
         let window = self.window();
         window.send_to_embedder(msg);
+    }
+
+    /// Sends a notification to the parent iframe element if this document is in an embedded webview.
+    /// The constellation checks if the webview is embedded and forwards the event to the parent pipeline.
+    pub(crate) fn notify_embedded_webview_parent(&self, event: EmbeddedWebViewEventType) {
+        let window = self.window();
+        // Only top-level windows can be embedded webviews
+        if window.is_top_level() {
+            window.send_to_constellation(
+                ScriptToConstellationMessage::EmbeddedWebViewNotification(event),
+            );
+        }
     }
 
     pub(crate) fn dirty_all_nodes(&self) {
@@ -3152,7 +3189,57 @@ impl Document {
             current_rendering_epoch,
         );
 
+        // After reflow, update embedded webview rects for input event routing
+        self.update_embedded_webview_rects();
+
         results
+    }
+
+    /// Update the rects of embedded webviews for input event routing.
+    /// This sends the current position/size of each embedded webview iframe
+    /// to the compositor so it can route input events to the correct webview.
+    /// Also updates visibility state when iframes have display:none.
+    fn update_embedded_webview_rects(&self) {
+        let parent_webview_id = self.webview_id();
+        let paint_api = self.window().paint_api();
+        let device_pixel_ratio = self.window().device_pixel_ratio().get();
+
+        // Collect embedded webview iframes first to avoid holding the borrow
+        // during border_box() calls which can trigger reflow and need iframes_mut().
+        let embedded_iframes: Vec<(DomRoot<HTMLIFrameElement>, WebViewId)> = self
+            .iframes()
+            .iter()
+            .filter(|iframe| iframe.is_embedded_webview())
+            .filter_map(|iframe| iframe.embedded_webview_id().map(|id| (iframe, id)))
+            .collect();
+
+        for (iframe, embedded_webview_id) in embedded_iframes {
+            // Get the iframe's border box (in CSS pixels relative to the initial containing block)
+            // This is equivalent to getBoundingClientRect() which is viewport-relative.
+            // If the iframe has display:none, border_box() returns None.
+            let Some(border_box) = iframe.upcast::<Node>().border_box() else {
+                // Iframe is not visible (display:none), notify compositor to hide it
+                paint_api.set_embedded_webview_hidden(embedded_webview_id, parent_webview_id, true);
+                continue;
+            };
+
+            // Convert to device pixels
+            // Note: border_box coordinates are viewport-relative (like getBoundingClientRect)
+            let rect = webrender_api::units::DeviceRect::from_origin_and_size(
+                webrender_api::units::DevicePoint::new(
+                    border_box.origin.x.to_f32_px() * device_pixel_ratio,
+                    border_box.origin.y.to_f32_px() * device_pixel_ratio,
+                ),
+                webrender_api::units::DeviceSize::new(
+                    border_box.size.width.to_f32_px() * device_pixel_ratio,
+                    border_box.size.height.to_f32_px() * device_pixel_ratio,
+                ),
+            );
+
+            // Iframe is visible, notify compositor to show it and update its rect
+            paint_api.set_embedded_webview_hidden(embedded_webview_id, parent_webview_id, false);
+            paint_api.update_embedded_webview_rect(embedded_webview_id, parent_webview_id, rect);
+        }
     }
 
     pub(crate) fn handle_no_longer_waiting_on_asynchronous_image_updates(&self) {
@@ -3887,6 +3974,7 @@ impl Document {
             active_sandboxing_flag_set: Cell::new(SandboxingFlagSet::empty()),
             creation_sandboxing_flag_set: Cell::new(creation_sandboxing_flag_set),
             favicon: RefCell::new(None),
+            theme_color: RefCell::new(None),
             websockets: DOMTracker::new(),
             details_name_groups: Default::default(),
             protocol_handler_automation_mode: Default::default(),
@@ -4981,6 +5069,36 @@ impl Document {
 
     pub(crate) fn notify_embedder_favicon(&self) {
         if let Some(ref image) = *self.favicon.borrow() {
+            // Encode the raw pixel data as PNG for the embedded webview event
+            let pixel_format = match image.format {
+                embedder_traits::PixelFormat::RGBA8 => pixels::SnapshotPixelFormat::RGBA,
+                embedder_traits::PixelFormat::BGRA8 => pixels::SnapshotPixelFormat::BGRA,
+                _ => pixels::SnapshotPixelFormat::RGBA, // Fallback
+            };
+
+            let mut snapshot = pixels::Snapshot::from_vec(
+                Size2D::new(image.width, image.height),
+                pixel_format,
+                pixels::SnapshotAlphaMode::Transparent {
+                    premultiplied: false,
+                },
+                image.data().to_vec(),
+            );
+
+            let mut png_bytes = Vec::new();
+            if snapshot
+                .encode_for_mime_type(&pixels::EncodedImageType::Png, None, &mut png_bytes)
+                .is_ok()
+            {
+                // Notify parent iframe about favicon change (for embedded webviews)
+                self.notify_embedded_webview_parent(EmbeddedWebViewEventType::FaviconChanged {
+                    bytes: GenericSharedMemory::from_bytes(&png_bytes),
+                    width: image.width,
+                    height: image.height,
+                });
+            }
+
+            // Notify embedder
             self.send_to_embedder(EmbedderMsg::NewFavicon(self.webview_id(), image.clone()));
         }
     }
@@ -4988,6 +5106,20 @@ impl Document {
     pub(crate) fn set_favicon(&self, favicon: Image) {
         *self.favicon.borrow_mut() = Some(favicon);
         self.notify_embedder_favicon();
+    }
+
+    pub(crate) fn notify_embedder_theme_color(&self) {
+        if let Some(ref theme_color) = *self.theme_color.borrow() {
+            // Notify parent iframe about theme color change (for embedded webviews)
+            self.notify_embedded_webview_parent(EmbeddedWebViewEventType::ThemeColorChanged(
+                theme_color.clone(),
+            ));
+        }
+    }
+
+    pub(crate) fn set_theme_color(&self, theme_color: String) {
+        *self.theme_color.borrow_mut() = Some(theme_color);
+        self.notify_embedder_theme_color();
     }
 }
 

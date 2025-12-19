@@ -9,14 +9,16 @@ use dom_struct::dom_struct;
 use js::rust::HandleObject;
 use profile_traits::mem::MemoryReportResult;
 use script_bindings::error::{Error, Fallible};
-use script_bindings::interfaces::ServoInternalsHelpers;
+use script_bindings::interfaces::{EmbedderHelpers, ServoInternalsHelpers};
 use script_bindings::script_runtime::JSContext;
 use script_bindings::str::USVString;
+use servo_config::embedder_prefs;
 use servo_config::prefs::{self, PrefValue};
 
 use crate::dom::bindings::codegen::Bindings::ServoInternalsBinding::ServoInternalsMethods;
 use crate::dom::bindings::reflector::{DomGlobal, Reflector, reflect_dom_object};
 use crate::dom::bindings::root::DomRoot;
+use crate::dom::embedder::Embedder;
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::promise::Promise;
 use crate::realms::{AlreadyInRealm, InRealm};
@@ -61,47 +63,110 @@ impl ServoInternalsMethods<crate::DomTypeHolder> for ServoInternals {
 
     /// <https://servo.org/internal-no-spec>
     fn GetBoolPreference(&self, name: USVString) -> Fallible<bool> {
-        if let PrefValue::Bool(b) = prefs::get().get_value(&name) {
-            return Ok(b);
+        // Check if this is an embedder preference (contains a namespace separator)
+        if name.contains('.') {
+            // Look up in embedder preferences registry
+            if let Some(PrefValue::Bool(b)) = prefs::get_embedder_pref(&name) {
+                return Ok(b);
+            }
+        } else {
+            // Core Servo preference
+            if let PrefValue::Bool(b) = prefs::get().get_value(&name) {
+                return Ok(b);
+            }
         }
         Err(Error::TypeMismatch(None))
     }
 
     /// <https://servo.org/internal-no-spec>
     fn GetIntPreference(&self, name: USVString) -> Fallible<i64> {
-        if let PrefValue::Int(i) = prefs::get().get_value(&name) {
-            return Ok(i);
+        // Check if this is an embedder preference (contains a namespace separator)
+        if name.contains('.') {
+            // Look up in embedder preferences registry
+            if let Some(PrefValue::Int(i)) = prefs::get_embedder_pref(&name) {
+                return Ok(i);
+            }
+        } else {
+            // Core Servo preference
+            if let PrefValue::Int(i) = prefs::get().get_value(&name) {
+                return Ok(i);
+            }
         }
         Err(Error::TypeMismatch(None))
     }
 
     /// <https://servo.org/internal-no-spec>
     fn GetStringPreference(&self, name: USVString) -> Fallible<USVString> {
-        if let PrefValue::Str(s) = prefs::get().get_value(&name) {
-            return Ok(s.into());
+        // Check if this is an embedder preference (contains a namespace separator)
+        if name.contains('.') {
+            // Look up in embedder preferences registry
+            if let Some(PrefValue::Str(s)) = prefs::get_embedder_pref(&name) {
+                return Ok(s.into());
+            }
+        } else {
+            // Core Servo preference
+            if let PrefValue::Str(s) = prefs::get().get_value(&name) {
+                return Ok(s.into());
+            }
         }
         Err(Error::TypeMismatch(None))
     }
 
     /// <https://servo.org/internal-no-spec>
     fn SetBoolPreference(&self, name: USVString, value: bool) {
-        let mut current_prefs = prefs::get().clone();
-        current_prefs.set_value(&name, value.into());
-        prefs::set(current_prefs);
+        let pref_value: PrefValue = value.into();
+        // Check if this is an embedder preference (contains a namespace separator)
+        if name.contains('.') {
+            // Use the embedder prefs setter which invokes callbacks and notifies observers
+            embedder_prefs::set_embedder_pref_from_script(&name, pref_value.clone());
+        } else {
+            // Core Servo preference
+            let mut current_prefs = prefs::get().clone();
+            current_prefs.set_value(&name, pref_value.clone());
+            prefs::set(current_prefs);
+        }
+        // Broadcast preference change to all script threads via the Constellation
+        let _ = self.global().script_to_constellation_chan().send(
+            ScriptToConstellationMessage::BroadcastPreferenceChange(name.to_string(), pref_value),
+        );
     }
 
     /// <https://servo.org/internal-no-spec>
     fn SetIntPreference(&self, name: USVString, value: i64) {
-        let mut current_prefs = prefs::get().clone();
-        current_prefs.set_value(&name, value.into());
-        prefs::set(current_prefs);
+        let pref_value: PrefValue = value.into();
+        // Check if this is an embedder preference (contains a namespace separator)
+        if name.contains('.') {
+            // Use the embedder prefs setter which invokes callbacks and notifies observers
+            embedder_prefs::set_embedder_pref_from_script(&name, pref_value.clone());
+        } else {
+            // Core Servo preference
+            let mut current_prefs = prefs::get().clone();
+            current_prefs.set_value(&name, pref_value.clone());
+            prefs::set(current_prefs);
+        }
+        // Broadcast preference change to all script threads via the Constellation
+        let _ = self.global().script_to_constellation_chan().send(
+            ScriptToConstellationMessage::BroadcastPreferenceChange(name.to_string(), pref_value),
+        );
     }
 
     /// <https://servo.org/internal-no-spec>
     fn SetStringPreference(&self, name: USVString, value: USVString) {
-        let mut current_prefs = prefs::get().clone();
-        current_prefs.set_value(&name, value.0.into());
-        prefs::set(current_prefs);
+        let pref_value: PrefValue = value.0.into();
+        // Check if this is an embedder preference (contains a namespace separator)
+        if name.contains('.') {
+            // Use the embedder prefs setter which invokes callbacks and notifies observers
+            embedder_prefs::set_embedder_pref_from_script(&name, pref_value.clone());
+        } else {
+            // Core Servo preference
+            let mut current_prefs = prefs::get().clone();
+            current_prefs.set_value(&name, pref_value.clone());
+            prefs::set(current_prefs);
+        }
+        // Broadcast preference change to all script threads via the Constellation
+        let _ = self.global().script_to_constellation_chan().send(
+            ScriptToConstellationMessage::BroadcastPreferenceChange(name.to_string(), pref_value),
+        );
     }
 }
 
@@ -117,7 +182,10 @@ impl ServoInternalsHelpers for ServoInternals {
     /// The navigator.servo api is exposed to about: pages except about:blank, as
     /// well as any URLs provided by embedders that register new protocol handlers.
     #[expect(unsafe_code)]
-    fn is_servo_internal(cx: JSContext, _global: HandleObject) -> bool {
+    fn is_servo_internal(cx: JSContext, global: HandleObject) -> bool {
+        if Embedder::is_allowed_to_embed(cx, global) {
+            return true;
+        }
         unsafe {
             let in_realm_proof = AlreadyInRealm::assert_for_cx(cx);
             let global_scope = GlobalScope::from_context(*cx, InRealm::Already(&in_realm_proof));

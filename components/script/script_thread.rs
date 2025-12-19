@@ -41,9 +41,9 @@ use base::id::{
 use canvas_traits::webgl::WebGLPipeline;
 use chrono::{DateTime, Local};
 use constellation_traits::{
-    JsEvalResult, LoadData, LoadOrigin, NavigationHistoryBehavior, ScreenshotReadinessResponse,
-    ScriptToConstellationChan, ScriptToConstellationMessage, StructuredSerializedData,
-    WindowSizeType,
+    EmbeddedWebViewEventType, JsEvalResult, LoadData, LoadOrigin, NavigationHistoryBehavior,
+    ScreenshotReadinessResponse, ScriptToConstellationChan, ScriptToConstellationMessage,
+    StructuredSerializedData, WindowSizeType,
 };
 use crossbeam_channel::unbounded;
 use data_url::mime::Mime;
@@ -54,8 +54,8 @@ use devtools_traits::{
 use embedder_traits::user_contents::{UserContentManagerId, UserContents};
 use embedder_traits::{
     EmbedderControlId, EmbedderControlResponse, EmbedderMsg, FocusSequenceNumber,
-    JavaScriptEvaluationError, JavaScriptEvaluationId, MediaSessionActionType, Theme,
-    ViewportDetails, WebDriverScriptCommand,
+    JavaScriptEvaluationError, JavaScriptEvaluationId, MediaSessionActionType, ServoErrorType,
+    Theme, ViewportDetails, WebDriverScriptCommand,
 };
 use encoding_rs::Encoding;
 use fonts::{FontContext, SystemFontServiceProxy};
@@ -91,6 +91,7 @@ use script_traits::{
     NewPipelineInfo, Painter, ProgressiveWebMetricType, ScriptThreadMessage,
     UpdatePipelineIdReason,
 };
+use servo_config::pref_util::PrefValue;
 use servo_config::{opts, prefs};
 use servo_url::{ImmutableOrigin, MutableOrigin, OriginSnapshot, ServoUrl};
 use storage_traits::StorageThreads;
@@ -1899,11 +1900,22 @@ impl ScriptThread {
                 self.handle_refresh_cursor(pipeline_id);
             },
             ScriptThreadMessage::PreferencesUpdated(updates) => {
-                let mut current_preferences = prefs::get().clone();
-                for (name, value) in updates {
-                    current_preferences.set_value(&name, value);
+                // Only update core preferences (those without namespace separator)
+                // Embedder preferences are already stored in the embedder prefs registry
+                let core_updates: Vec<_> = updates
+                    .iter()
+                    .filter(|(name, _)| !name.contains('.'))
+                    .collect();
+                if !core_updates.is_empty() {
+                    let mut current_preferences = prefs::get().clone();
+                    for (name, value) in core_updates {
+                        current_preferences.set_value(name, value.clone());
+                    }
+                    prefs::set(current_preferences);
                 }
-                prefs::set(current_preferences);
+
+                // Dispatch preferencechanged events to all Embedder instances
+                self.dispatch_preference_changed_to_embedders(&updates, CanGc::from_cx(cx));
             },
             ScriptThreadMessage::ForwardKeyboardScroll(pipeline_id, scroll) => {
                 if let Some(document) = self.documents.borrow().find_document(pipeline_id) {
@@ -1937,6 +1949,16 @@ impl ScriptThread {
             },
             ScriptThreadMessage::UpdatePinchZoomInfos(id, pinch_zoom_infos) => {
                 self.handle_update_pinch_zoom_infos(id, pinch_zoom_infos, CanGc::from_cx(cx));
+            },
+            ScriptThreadMessage::DispatchEmbeddedWebViewEvent {
+                target,
+                parent,
+                event,
+            } => {
+                self.handle_embedded_webview_event(parent, target, event, CanGc::from_cx(cx));
+            },
+            ScriptThreadMessage::DispatchServoError(error_type, message) => {
+                self.handle_dispatch_servo_error(error_type, message, CanGc::from_cx(cx));
             },
         }
     }
@@ -2884,6 +2906,9 @@ impl ScriptThread {
             .documents
             .borrow()
             .find_iframe(parent_pipeline_id, browsing_context_id);
+        let is_embedded_webview = frame_element
+            .as_ref()
+            .is_some_and(|iframe| iframe.is_embedded_webview());
         if let Some(frame_element) = frame_element {
             frame_element.update_pipeline_id(new_pipeline_id, reason, can_gc);
         }
@@ -2902,6 +2927,7 @@ impl ScriptThread {
                 // is no need to pass along existing opener information that
                 // will be discarded.
                 None,
+                is_embedded_webview,
             );
         }
     }
@@ -3181,6 +3207,44 @@ impl ScriptThread {
         }
     }
 
+    /// Handle an embedded webview event that should be dispatched on an iframe element.
+    fn handle_embedded_webview_event(
+        &self,
+        parent_id: PipelineId,
+        browsing_context_id: BrowsingContextId,
+        event: EmbeddedWebViewEventType,
+        can_gc: CanGc,
+    ) {
+        let iframe = self
+            .documents
+            .borrow()
+            .find_iframe(parent_id, browsing_context_id);
+        match iframe {
+            Some(iframe) => iframe.dispatch_embedded_webview_event(event, can_gc),
+            None => warn!(
+                "Embedded webview event sent to closed pipeline {}.",
+                parent_id
+            ),
+        }
+    }
+
+    /// Handle a servo error by dispatching servoerror events to all navigator.embedder instances.
+    fn handle_dispatch_servo_error(
+        &self,
+        error_type: ServoErrorType,
+        message: String,
+        can_gc: CanGc,
+    ) {
+        // Dispatch servoerror event to windows that already have an Embedder created
+        for (_, document) in self.documents.borrow().iter() {
+            if let Some(embedder) = document.window().Navigator().get_embedder() {
+                // Enter the realm of the embedder's global before dispatching JS events
+                let _ac = enter_realm(&*embedder);
+                embedder.dispatch_servo_error(&error_type, &message, can_gc);
+            }
+        }
+    }
+
     fn ask_constellation_for_top_level_info(
         &self,
         sender_webview_id: WebViewId,
@@ -3287,7 +3351,13 @@ impl ScriptThread {
             self.senders.pipeline_to_embedder_sender.clone(),
             self.senders.constellation_sender.clone(),
             incomplete.pipeline_id,
-            incomplete.parent_info,
+            // For embedded webviews, don't pass parent_info to Window so that
+            // is_top_level() returns true (they are top-level browsing contexts).
+            if incomplete.is_embedded_webview {
+                None
+            } else {
+                incomplete.parent_info
+            },
             incomplete.viewport_details,
             origin.clone(),
             final_url.clone(),
@@ -3309,6 +3379,8 @@ impl ScriptThread {
             #[cfg(feature = "webgpu")]
             self.gpu_id_hub.clone(),
             incomplete.load_data.inherited_secure_context,
+            incomplete.is_embedded_webview,
+            incomplete.hide_focus,
             incomplete.theme,
             self.this.clone(),
         );
@@ -3330,6 +3402,7 @@ impl ScriptThread {
             incomplete.webview_id,
             incomplete.parent_info,
             incomplete.opener,
+            incomplete.is_embedded_webview,
         );
         if window_proxy.parent().is_some() {
             // https://html.spec.whatwg.org/multipage/#navigating-across-documents:delaying-load-events-mode-2
@@ -4015,6 +4088,24 @@ impl ScriptThread {
             return;
         };
         document.event_handler().handle_refresh_cursor();
+    }
+
+    /// Dispatch preferencechanged events to all Embedder instances in this script thread.
+    fn dispatch_preference_changed_to_embedders(
+        &self,
+        changes: &[(String, PrefValue)],
+        can_gc: CanGc,
+    ) {
+        // Dispatch preferencechanged event to windows that already have an Embedder created
+        for (_, document) in self.documents.borrow().iter() {
+            if let Some(embedder) = document.window().Navigator().get_embedder() {
+                // Enter the realm of the embedder's global before dispatching JS events
+                let _ac = enter_realm(&*embedder);
+                for (name, value) in changes {
+                    embedder.dispatch_preference_changed(name, value, can_gc);
+                }
+            }
+        }
     }
 
     pub(crate) fn is_servo_privileged(url: ServoUrl) -> bool {

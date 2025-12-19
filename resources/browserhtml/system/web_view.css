@@ -1,0 +1,286 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+
+:host {
+  display: flex;
+  font-family: var(--font-family-base);
+  box-sizing: border-box;
+}
+
+:host .wrapper {
+  background: var(--bg-webview);
+  border-radius: var(--radius-md) var(--radius-md) 0 0;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  box-shadow: 0 4px 4px var(--color-shadow);
+  transition: box-shadow var(--transition-fast);
+  position: relative; /* Needed for absolutely positioned menu overlay */
+}
+
+:host .wrapper.active {
+  box-shadow:
+    0 0 0 3px var(--color-focus-ring),
+    0 4px 4px var(--color-shadow);
+}
+
+/* Container for iframe and dialog overlay */
+:host .iframe-container {
+  flex: 1;
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+}
+
+:host iframe {
+  flex: 1;
+  border: none;
+  min-width: 0;
+  min-height: 0;
+  position: relative;
+}
+
+:host .bar {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  padding: var(--spacing-xs) var(--spacing-sm) var(--spacing-xs)
+    var(--spacing-sm);
+  border-radius: var(--radius-md) var(--radius-md) 0 0;
+  box-shadow: 0 4px 4px var(--color-shadow);
+  position: relative;
+  transition:
+    opacity var(--transition-fast),
+    max-height var(--transition-fast),
+    padding var(--transition-fast);
+  max-height: 3em;
+  overflow: hidden;
+}
+
+:host .bar.hidden {
+  opacity: 0;
+  max-height: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  pointer-events: none;
+  transition-delay: 0.5s;
+}
+
+:host .bar img {
+  width: var(--size-icon);
+}
+
+:host .icon {
+  cursor: pointer;
+}
+
+:host .icon.enabled-false {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+:host .title {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+:host .menu-container {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+/* Dialog overlay styles - positioned within iframe-container */
+:host .dialog-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: var(--color-backdrop);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: var(--z-dialog);
+}
+
+:host .dialog-box {
+  background: var(--bg-surface);
+  border-radius: var(--radius-md);
+  padding: var(--spacing-lg);
+  min-width: 280px;
+  max-width: 80%;
+  box-shadow: 0 8px 32px var(--color-shadow);
+  font-family: var(--font-family-base);
+}
+
+:host .dialog-message {
+  margin-bottom: var(--spacing-md);
+  color: var(--color-text);
+  font-size: var(--font-size-menu);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+
+:host .dialog-input {
+  width: 100%;
+  padding: var(--spacing-sm) var(--spacing-md);
+  margin-bottom: var(--spacing-md);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  font-size: var(--font-size-menu);
+  background: var(--bg-surface);
+  color: var(--color-text);
+  box-sizing: border-box;
+}
+
+:host .dialog-input:focus {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 2px var(--color-focus-ring);
+}
+
+:host .dialog-buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--spacing-sm);
+}
+
+:host .dialog-button {
+  padding: var(--spacing-sm) var(--spacing-md);
+  border-radius: var(--radius-sm);
+  font-size: var(--font-size-menu);
+  font-weight: var(--font-weight-bold);
+  cursor: pointer;
+  border: 1px solid var(--color-border);
+  background: var(--bg-surface);
+  color: var(--color-text);
+  transition:
+    background var(--transition-fast),
+    border-color var(--transition-fast);
+}
+
+:host .dialog-button:hover {
+  background: var(--bg-hover);
+}
+
+:host .dialog-button.primary {
+  background: var(--color-primary);
+  color: var(--color-text-on-header);
+  border-color: var(--color-primary);
+}
+
+:host .dialog-button.primary:hover {
+  filter: brightness(0.9);
+}
+
+:host .permission-prompt {
+  text-align: center;
+}
+
+:host .permission-icon {
+  width: var(--size-logo);
+  height: var(--size-logo);
+  margin: 0 auto var(--spacing-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-icon);
+  border-radius: 50%;
+  color: var(--color-primary);
+}
+
+:host .permission-icon lucide-icon {
+  width: var(--size-notification-icon);
+  height: var(--size-notification-icon);
+}
+
+:host .permission-title {
+  font-size: var(--font-size-menu);
+  font-weight: var(--font-weight-bold);
+  color: var(--color-text);
+  margin-bottom: var(--spacing-sm);
+}
+
+:host .permission-prompt .dialog-message {
+  text-align: center;
+}
+
+:host .permission-prompt .dialog-buttons {
+  justify-content: center;
+}
+
+/* Loading progress bar */
+:host .load-progress {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 3px;
+  background: var(--color-primary);
+  transition:
+    width 0.3s ease-out,
+    opacity 0.3s ease;
+  opacity: 0;
+  width: 0;
+  z-index: var(--z-base);
+}
+
+:host .load-progress.load-started {
+  width: 30%;
+  opacity: 1;
+  animation: load-shimmer 1.5s infinite;
+}
+
+:host .load-progress.load-headparsed {
+  width: 65%;
+  opacity: 1;
+  animation: load-shimmer 1.5s infinite;
+}
+
+:host .load-progress.load-complete {
+  width: 100%;
+  opacity: 0;
+  transition:
+    width 0.2s ease-out,
+    opacity 0.4s ease 0.2s;
+}
+
+@keyframes load-shimmer {
+  0%,
+  100% {
+    filter: brightness(1);
+  }
+  50% {
+    filter: brightness(1.3);
+  }
+}
+
+/* ============================================================================
+   Mobile-specific styles
+   ============================================================================ */
+
+/* When mobile-mode is detected, adjust the wrapper */
+:host(.mobile-mode) .wrapper {
+  border-radius: 0;
+  box-shadow: none;
+}
+
+:host(.mobile-mode) .wrapper.active {
+  box-shadow: none;
+}
+
+/* Hide the title bar completely on mobile */
+:host(.mobile-mode) .bar {
+  display: none !important;
+}
+
+/* Make iframe container fill entire space */
+:host(.mobile-mode) .iframe-container {
+  border-radius: 0;
+}

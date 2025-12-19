@@ -22,7 +22,7 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use base::generic_channel::{GenericCallback, GenericSender, GenericSharedMemory, SendResult};
-use base::id::{PipelineId, WebViewId};
+use base::id::{BrowsingContextId, PipelineId, WebViewId};
 use crossbeam_channel::Sender;
 use euclid::{Box2D, Point2D, Scale, Size2D, Vector2D};
 use http::{HeaderMap, Method, StatusCode};
@@ -31,6 +31,7 @@ use malloc_size_of::malloc_size_of_is_0;
 use malloc_size_of_derive::MallocSizeOf;
 use pixels::SharedRasterImage;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use servo_config::pref_util::PrefValue;
 use servo_geometry::{DeviceIndependentIntRect, DeviceIndependentIntSize};
 use servo_url::ServoUrl;
 use strum::{EnumMessage, IntoStaticStr};
@@ -63,6 +64,31 @@ impl WebViewPoint {
         match self {
             Self::Device(point) => *point,
             Self::Page(point) => *point * scale,
+        }
+    }
+
+    /// Scale the point by the given factor (divides coordinates by scale).
+    /// Used for converting coordinates to account for page zoom.
+    pub fn scale_by(&self, scale: f32) -> Self {
+        match self {
+            Self::Device(point) => Self::Device(DevicePoint::new(point.x / scale, point.y / scale)),
+            Self::Page(point) => Self::Page(Point2D::new(point.x / scale, point.y / scale)),
+        }
+    }
+
+    /// Get the x coordinate regardless of coordinate space.
+    pub fn x(&self) -> f32 {
+        match self {
+            Self::Device(point) => point.x,
+            Self::Page(point) => point.x,
+        }
+    }
+
+    /// Get the y coordinate regardless of coordinate space.
+    pub fn y(&self) -> f32 {
+        match self {
+            Self::Device(point) => point.y,
+            Self::Page(point) => point.y,
         }
     }
 }
@@ -307,9 +333,16 @@ pub struct ViewportDetails {
     /// The size of the layout viewport.
     pub size: Size2D<f32, CSSPixel>,
 
-    /// The scale factor to use to account for HiDPI scaling. This does not take into account
-    /// any page or pinch zoom applied by `Paint` to the contents.
+    /// The scale factor to use to account for HiDPI scaling. For top-level webviews, this
+    /// includes the page zoom factor. For embedded webviews, this is just the device HiDPI
+    /// and page zoom is passed separately via `page_zoom_for_rendering`.
     pub hidpi_scale_factor: Scale<f32, CSSPixel, DevicePixel>,
+
+    /// Page zoom to apply during display list building (for embedded webviews only).
+    /// For top-level webviews this is `None` because zoom is applied externally in the
+    /// painter as a WebRender reference frame transform. For embedded webviews, the zoom
+    /// must be applied inside the webview's own display list.
+    pub page_zoom_for_rendering: Option<f32>,
 }
 
 impl ViewportDetails {
@@ -329,13 +362,19 @@ pub struct ScreenMetrics {
 }
 
 /// An opaque identifier for a single history traversal operation.
-#[derive(Clone, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub struct TraversalId(String);
 
 impl TraversalId {
     #[expect(clippy::new_without_default)]
     pub fn new() -> Self {
         Self(Uuid::new_v4().to_string())
+    }
+}
+
+impl std::fmt::Display for TraversalId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
     }
 }
 
@@ -411,6 +450,12 @@ impl From<ConsoleLogLevel> for log::Level {
     }
 }
 
+#[derive(Deserialize, Serialize)]
+pub struct NewOSWindowParams {
+    pub url: ServoUrl,
+    pub features: String,
+}
+
 /// Messages towards the embedder.
 #[derive(Deserialize, IntoStaticStr, Serialize)]
 pub enum EmbedderMsg {
@@ -436,6 +481,21 @@ pub enum EmbedderMsg {
     ),
     /// Whether or not to allow script to open a new tab/browser
     AllowOpeningWebView(WebViewId, GenericSender<Option<NewWebViewDetails>>),
+    /// Whether or not to allow an iframe with "embed" attribute to create an embedded webview.
+    AllowOpeningEmbeddedWebView(WebViewId, GenericSender<Option<NewWebViewDetails>>),
+    /// An embedded webview has opened a new embedded webview via `window.open()`.
+    /// The constellation has already created the new webview and pipeline.
+    /// The parent webview (browserhtml shell) should create an `<iframe embed>` that
+    /// adopts the pre-created webview using the provided IDs.
+    ///
+    /// Fields: (parent_webview_id, new_webview_id, new_browsing_context_id, new_pipeline_id, target_url)
+    EmbeddedWebViewCreated(
+        WebViewId,
+        WebViewId,
+        BrowsingContextId,
+        PipelineId,
+        ServoUrl,
+    ),
     /// A webview was destroyed.
     WebViewClosed(WebViewId),
     /// A webview potentially gained focus for keyboard events.
@@ -517,6 +577,24 @@ pub enum EmbedderMsg {
     InputEventHandled(WebViewId, InputEventId, InputEventResult),
     /// Send the embedder an accessibility tree update.
     AccessibilityTreeUpdate(WebViewId, accesskit::TreeUpdate),
+    /// Request from web content (via `navigator.embedder.openNewOSWindow()`) to open a new
+    /// OS-level window with the given URL and features.
+    OpenNewOSWindow(NewOSWindowParams),
+    /// Request the embedder to close the currently focused OS window.
+    CloseCurrentOSWindow,
+    /// Request the embedder to start a window drag operation.
+    /// The WebViewId is used to identify which window to drag.
+    StartWindowDrag(WebViewId),
+    /// Request the embedder to start a window resize operation.
+    /// The WebViewId is used to identify which window to resize.
+    StartWindowResize(WebViewId),
+    /// Notify the embedder that an embedder preference (namespaced, e.g., "browserhtml.theme")
+    /// was changed from a content process. The embedder should invoke the registered setter
+    /// callback to persist the preference. This ensures preference saves only happen in the
+    /// main process, avoiding sandbox and race condition issues.
+    EmbedderPreferenceChanged(String, PrefValue),
+    /// Request the embedder to exit the application.
+    ExitApplication,
 }
 
 impl Debug for EmbedderMsg {
@@ -1073,6 +1151,54 @@ pub enum ScreenshotCaptureError {
     WebViewDoesNotExist,
 }
 
+/// Image format for screenshot encoding.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum ScreenshotImageType {
+    Png,
+    Jpeg,
+    Webp,
+}
+
+impl ScreenshotImageType {
+    pub fn mime_type(&self) -> &'static str {
+        match self {
+            Self::Png => "image/png",
+            Self::Jpeg => "image/jpeg",
+            Self::Webp => "image/webp",
+        }
+    }
+}
+
+/// Request parameters for taking a screenshot of an embedded webview.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct EmbeddedWebViewScreenshotRequest {
+    pub image_type: ScreenshotImageType,
+    /// Quality setting (0.0 to 1.0), used for JPEG/WebP compression.
+    pub quality: f64,
+}
+
+/// Result of a successful screenshot operation.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct EmbeddedWebViewScreenshotResult {
+    /// The encoded image bytes.
+    pub bytes: Vec<u8>,
+    /// The MIME type of the encoded image (e.g., "image/png").
+    pub mime_type: String,
+}
+
+/// Error that can occur during embedded webview screenshot capture.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub enum EmbeddedWebViewScreenshotError {
+    /// The iframe is not an embedded webview.
+    NotEmbeddedWebView,
+    /// The webview does not exist.
+    WebViewDoesNotExist,
+    /// Failed to capture the screenshot.
+    CaptureFailed,
+    /// Failed to encode the image.
+    EncodingFailed,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 pub struct RgbColor {
     pub red: u8,
@@ -1118,4 +1244,27 @@ pub struct NewWebViewDetails {
     pub webview_id: WebViewId,
     pub viewport_details: ViewportDetails,
     pub user_content_manager_id: Option<UserContentManagerId>,
+}
+
+/// Types of errors that can be reported via `navigator.embedder.onservoerror`.
+/// This is a Servo-specific, non-standard API.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum ServoErrorType {
+    /// Lost connection with the web engine backend.
+    LostConnectionWithBackend,
+    /// The devtools server failed to start.
+    DevtoolsFailedToStart,
+    /// Failed to send a response.
+    ResponseFailedToSend,
+}
+
+impl ServoErrorType {
+    /// Get the error type as a string for the JavaScript event detail.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ServoErrorType::LostConnectionWithBackend => "LostConnectionWithBackend",
+            ServoErrorType::DevtoolsFailedToStart => "DevtoolsFailedToStart",
+            ServoErrorType::ResponseFailedToSend => "ResponseFailedToSend",
+        }
+    }
 }

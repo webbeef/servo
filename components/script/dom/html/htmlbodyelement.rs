@@ -2,6 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+use constellation_traits::{EmbeddedWebViewEventType, ScriptToConstellationMessage};
 use dom_struct::dom_struct;
 use embedder_traits::{EmbedderMsg, LoadStatus};
 use html5ever::{LocalName, Prefix, local_name, ns};
@@ -135,6 +136,12 @@ impl VirtualMethods for HTMLBodyElement {
                 window.webview_id(),
                 LoadStatus::HeadParsed,
             ));
+            // Also notify parent iframe if this is an embedded webview.
+            window.send_to_constellation(
+                ScriptToConstellationMessage::EmbeddedWebViewNotification(
+                    EmbeddedWebViewEventType::LoadStatusChanged(LoadStatus::HeadParsed),
+                ),
+            );
         }
     }
 

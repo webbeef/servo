@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html>
+  <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Home</title>
+    <link rel="stylesheet" href="//theme.localhost:8888/index.css" />
+    <link rel="stylesheet" href="//shared.localhost:8888/fonts/fonts.css" />
+    <link
+      rel="stylesheet"
+      href="//shared.localhost:8888/third_party/lucide/lucide.css"
+    />
+    <link rel="stylesheet" href="index.css" />
+    <script src="//system.localhost:8888/third_party/fend/fend_wasm.js"></script>
+    <script type="module" src="//shared.localhost:8888/lucide_icon.js"></script>
+    <script type="module" src="//shared.localhost:8888/theme.js"></script>
+    <script type="module" src="index.js"></script>
+  </head>
+  <body>
+    <main class="container">
+      <div class="widgets-area" id="widgets-area"></div>
+
+      <div class="bookmarks-area" id="bookmarks-area">
+        <div class="bookmarks-grid" id="bookmarks-grid"></div>
+      </div>
+
+      <div class="results-area" id="results-area">
+        <div class="results-list" id="results-list"></div>
+      </div>
+
+      <div class="search-bar">
+        <div class="search-input-container">
+          <lucide-icon name="search"></lucide-icon>
+          <input
+            type="text"
+            class="search-input"
+            id="search-input"
+            placeholder="Search or enter URL…"
+            autocomplete="off"
+          />
+        </div>
+      </div>
+    </main>
+  </body>
+</html>

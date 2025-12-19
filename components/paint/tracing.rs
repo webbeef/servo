@@ -54,6 +54,14 @@ mod from_constellation {
                 Self::DelayNewFrameForCanvas(..) => target!("DelayFramesForCanvas"),
                 Self::ScreenshotReadinessReponse(..) => target!("ScreenshotReadinessResponse"),
                 Self::SendLCPCandidate(..) => target!("SendLCPCandidate"),
+                Self::UpdateEmbeddedWebViewRect { .. } => target!("UpdateEmbeddedWebViewRect"),
+                Self::RemoveEmbeddedWebView(..) => target!("RemoveEmbeddedWebView"),
+                Self::SetEmbeddedWebViewHidden { .. } => target!("SetEmbeddedWebViewHidden"),
+                Self::TakeEncodedScreenshot(..) => target!("TakeEncodedScreenshot"),
+                Self::ForwardInputEventToEmbeddedWebView(..) => {
+                    target!("ForwardInputEventToEmbeddedWebView")
+                },
+                Self::SetPageZoom(..) => target!("SetPageZoom"),
             }
         }
     }

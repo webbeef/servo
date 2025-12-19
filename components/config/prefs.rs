@@ -2,8 +2,9 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+use std::collections::HashMap;
 use std::env::consts::ARCH;
-use std::sync::{RwLock, RwLockReadGuard};
+use std::sync::{LazyLock, RwLock, RwLockReadGuard};
 
 use serde::{Deserialize, Serialize};
 use servo_config_macro::ServoPreferences;
@@ -12,11 +13,16 @@ pub use crate::pref_util::PrefValue;
 
 static PREFERENCES: RwLock<Preferences> = RwLock::new(Preferences::const_default());
 
+/// Registry for embedder preferences, keyed by namespaced name (e.g., "browserhtml.theme").
+/// This allows embedder preferences to be accessed through the same API as core preferences.
+static EMBEDDER_PREFS: LazyLock<RwLock<HashMap<String, PrefValue>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
+
 pub trait PreferencesObserver: Send + Sync {
     fn prefs_changed(&self, _changes: &[(&'static str, PrefValue)]) {}
 }
 
-static OBSERVERS: RwLock<Vec<Box<dyn PreferencesObserver>>> = RwLock::new(Vec::new());
+pub(crate) static OBSERVERS: RwLock<Vec<Box<dyn PreferencesObserver>>> = RwLock::new(Vec::new());
 
 #[inline]
 /// Get the current set of global preferences for Servo.
@@ -61,6 +67,21 @@ pub fn set(preferences: Preferences) {
     for observer in &*OBSERVERS.read().unwrap() {
         observer.prefs_changed(&changed);
     }
+}
+
+/// Get an embedder preference by its namespaced name (e.g., "browserhtml.theme").
+/// Returns `None` if the preference is not registered.
+pub fn get_embedder_pref(name: &str) -> Option<PrefValue> {
+    EMBEDDER_PREFS.read().unwrap().get(name).cloned()
+}
+
+/// Set an embedder preference by its namespaced name.
+/// This is called internally by the embedder_prefs notification system.
+pub fn set_embedder_pref(name: &str, value: PrefValue) {
+    EMBEDDER_PREFS
+        .write()
+        .unwrap()
+        .insert(name.to_string(), value);
 }
 
 /// A convenience macro for accessing a preference value using its static path.

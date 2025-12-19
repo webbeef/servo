@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html>
+  <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="stylesheet" href="//theme.localhost:8888/index.css" />
+    <link rel="stylesheet" href="//shared.localhost:8888/fonts/fonts.css" />
+    <link
+      rel="stylesheet"
+      href="//shared.localhost:8888/third_party/lucide/lucide.css"
+    />
+    <link rel="stylesheet" href="index.css" />
+    <script type="module" src="//shared.localhost:8888/lucide_icon.js"></script>
+    <script type="module" src="//shared.localhost:8888/theme.js"></script>
+    <script type="module" src="index.js"></script>
+  </head>
+  <body>
+    <div class="weather-widget">
+      <div class="weather-icon" id="weather-icon">
+        <lucide-icon name="cloud"></lucide-icon>
+      </div>
+      <div class="weather-info">
+        <div class="temperature" id="temperature">--°</div>
+        <div class="condition" id="condition">Loading...</div>
+        <div class="location" id="location"></div>
+      </div>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,43 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+
+@import url(//system.localhost:8888/menu_shared.css);
+
+:host {
+  display: none;
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  z-index: var(--z-modal);
+}
+
+.menu {
+  position: absolute;
+  z-index: 1001;
+}
+
+.menu-item .icon-slot {
+  width: 1em;
+  height: 1em;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.menu-item.disabled {
+  opacity: 0.5;
+  cursor: default;
+  pointer-events: none;
+}
+
+.menu-item lucide-icon {
+  width: 1em;
+  height: 1em;
+}
+
+/* Align check icon to the right */
+.menu-item lucide-icon[name="check"] {
+  margin-left: auto;
+}

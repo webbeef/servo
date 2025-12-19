@@ -38,7 +38,7 @@ use embedder_traits::user_contents::{UserContents, UserScript};
 use embedder_traits::{
     AlertResponse, ConfirmResponse, EmbedderMsg, JavaScriptEvaluationError, PromptResponse,
     ScriptToEmbedderChan, SimpleDialogRequest, Theme, UntrustedNodeAddress, ViewportDetails,
-    WebDriverJSResult, WebDriverLoadStatus,
+    WebDriverJSResult, WebDriverLoadStatus, WebViewPoint,
 };
 use euclid::default::Rect as UntypedRect;
 use euclid::{Point2D, Rect, Scale, Size2D, Vector2D};
@@ -1127,12 +1127,22 @@ impl WindowMethods<crate::DomTypeHolder> for Window {
 
         let (sender, receiver) =
             ProfiledGenericChannel::channel(self.global().time_profiler_chan().clone()).unwrap();
+
         let dialog = SimpleDialogRequest::Alert {
             id: self.Document().embedder_controls().next_control_id(),
             message: message.to_string(),
             response_sender: sender,
         };
-        self.send_to_embedder(EmbedderMsg::ShowSimpleDialog(self.webview_id(), dialog));
+
+        // For embedded webviews, route through constellation to parent shell
+        if self.as_global_scope().is_embedded_webview() {
+            self.Document()
+                .embedder_controls()
+                .show_simple_dialog_for_embedded_webview(dialog);
+        } else {
+            self.send_to_embedder(EmbedderMsg::ShowSimpleDialog(self.webview_id(), dialog));
+        }
+
         receiver.recv().unwrap_or_else(|_| {
             // If the receiver is closed, we assume the dialog was cancelled.
             debug!("Alert dialog was cancelled or failed to show.");
@@ -1160,12 +1170,21 @@ impl WindowMethods<crate::DomTypeHolder> for Window {
         // the user to respond with a positive or negative response.
         let (sender, receiver) =
             ProfiledGenericChannel::channel(self.global().time_profiler_chan().clone()).unwrap();
+
         let dialog = SimpleDialogRequest::Confirm {
             id: self.Document().embedder_controls().next_control_id(),
             message: message.to_string(),
             response_sender: sender,
         };
-        self.send_to_embedder(EmbedderMsg::ShowSimpleDialog(self.webview_id(), dialog));
+
+        // For embedded webviews, route through constellation to parent shell
+        if self.as_global_scope().is_embedded_webview() {
+            self.Document()
+                .embedder_controls()
+                .show_simple_dialog_for_embedded_webview(dialog);
+        } else {
+            self.send_to_embedder(EmbedderMsg::ShowSimpleDialog(self.webview_id(), dialog));
+        }
 
         // Step 5: Let userPromptHandler be WebDriver BiDi user prompt opened with this,
         // "confirm", and message.
@@ -1211,13 +1230,22 @@ impl WindowMethods<crate::DomTypeHolder> for Window {
         // defaulted to the value given by default.
         let (sender, receiver) =
             ProfiledGenericChannel::channel(self.global().time_profiler_chan().clone()).unwrap();
+
         let dialog = SimpleDialogRequest::Prompt {
             id: self.Document().embedder_controls().next_control_id(),
             message: message.to_string(),
             default: default.to_string(),
             response_sender: sender,
         };
-        self.send_to_embedder(EmbedderMsg::ShowSimpleDialog(self.webview_id(), dialog));
+
+        // For embedded webviews, route through constellation to parent shell
+        if self.as_global_scope().is_embedded_webview() {
+            self.Document()
+                .embedder_controls()
+                .show_simple_dialog_for_embedded_webview(dialog);
+        } else {
+            self.send_to_embedder(EmbedderMsg::ShowSimpleDialog(self.webview_id(), dialog));
+        }
 
         // Step 6: Let userPromptHandler be WebDriver BiDi user prompt opened with this,
         // "prompt", and message.
@@ -3036,9 +3064,33 @@ impl Window {
         &self,
         input_event: &ConstellationInputEvent,
     ) -> Option<HitTestResult> {
-        self.hit_test_from_point_in_viewport(
-            input_event.hit_test_result.as_ref()?.point_in_viewport,
-        )
+        // For pointer events with coordinates, prefer the original event point over the
+        // WebRender hit test result's point_in_viewport. This is because the WebRender
+        // hit test might have computed coordinates relative to an embedded iframe's
+        // viewport, not the parent document's viewport.
+        //
+        // For events without coordinates or when the original point is unavailable,
+        // fall back to the WebRender hit test result's point.
+        let point_in_viewport = input_event
+            .event
+            .event
+            .point()
+            .map(|point| match point {
+                WebViewPoint::Page(css_point) => css_point,
+                WebViewPoint::Device(device_point) => {
+                    let scale = self.device_pixel_ratio();
+                    Point2D::new(device_point.x / scale.get(), device_point.y / scale.get())
+                },
+            })
+            .or_else(|| {
+                // Fall back to the WebRender hit test result's point if the original
+                // event point is not available.
+                input_event
+                    .hit_test_result
+                    .as_ref()
+                    .map(|r| r.point_in_viewport)
+            })?;
+        self.hit_test_from_point_in_viewport(point_in_viewport)
     }
 
     #[expect(unsafe_code)]
@@ -3057,8 +3109,25 @@ impl Window {
         // SAFETY: This is safe because `Window::query_elements_from_point` has ensured that
         // layout has run and any OpaqueNodes that no longer refer to real nodes are gone.
         let address = UntrustedNodeAddress(result.node.0 as *const c_void);
+        let node = unsafe { from_untrusted_node_address(address) };
+
+        // Verify the node belongs to this window's document
+        let node_doc = node.owner_doc();
+        let our_doc = self.Document();
+        if &*node_doc != &*our_doc {
+            warn!(
+                "hit_test_from_point_in_viewport: node {:?} belongs to different document! \
+                 Node doc URL: {:?}, Our doc URL: {:?}",
+                node.debug_str(),
+                node_doc.url(),
+                our_doc.url()
+            );
+            // Return None to indicate hit test failed for this document
+            return None;
+        }
+
         Some(HitTestResult {
-            node: unsafe { from_untrusted_node_address(address) },
+            node,
             cursor: result.cursor,
             point_in_node: result.point_in_target,
             point_in_frame,
@@ -3680,6 +3749,8 @@ impl Window {
         player_context: WindowGLContext,
         #[cfg(feature = "webgpu")] gpu_id_hub: Arc<IdentityHub>,
         inherited_secure_context: Option<bool>,
+        is_embedded_webview: bool,
+        hide_focus: bool,
         theme: Theme,
         weak_script_thread: Weak<ScriptThread>,
     ) -> DomRoot<Self> {
@@ -3706,6 +3777,8 @@ impl Window {
                 gpu_id_hub,
                 inherited_secure_context,
                 unminify_js,
+                is_embedded_webview,
+                hide_focus,
                 Some(font_context.clone()),
             ),
             ongoing_navigation: Default::default(),

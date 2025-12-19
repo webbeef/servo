@@ -168,6 +168,10 @@ pub(crate) struct InProgressLoad {
     /// The [`Theme`] to use for this page, once it loads.
     #[no_trace]
     pub(crate) theme: Theme,
+    /// Whether this is an embedded webview (has parent_info but should have no WindowProxy parent).
+    pub(crate) is_embedded_webview: bool,
+    /// Whether this document should never receive focus (hidefocus attribute on the iframe).
+    pub(crate) hide_focus: bool,
 }
 
 impl InProgressLoad {
@@ -190,6 +194,8 @@ impl InProgressLoad {
             url_list: vec![url],
             user_content_manager_id: new_pipeline_info.user_content_manager_id,
             theme: new_pipeline_info.theme,
+            is_embedded_webview: new_pipeline_info.is_embedded_webview,
+            hide_focus: new_pipeline_info.hide_focus,
         }
     }
 

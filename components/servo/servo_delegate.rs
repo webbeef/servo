@@ -3,6 +3,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 use base::generic_channel;
 use embedder_traits::{ConsoleLogLevel, Notification};
+use url::Url;
 
 use crate::webview_delegate::{AllowOrDenyRequest, WebResourceLoad};
 
@@ -42,6 +43,24 @@ pub trait ServoDelegate {
     /// A console message was logged by content not associated with a specific [`WebView`].
     /// <https://developer.mozilla.org/en-US/docs/Web/API/Console_API>
     fn show_console_message(&self, _level: ConsoleLogLevel, _message: String) {}
+
+    /// Request from web content (via `navigator.embedder.openNewOSWindow()`) to open a new
+    /// OS-level window with the given URL.
+    fn request_open_new_os_window(&self, _url: Url, _features: &str) {}
+
+    /// Request the embedder to close the currently focused OS window.
+    fn request_close_current_os_window(&self) {}
+
+    /// Request the embedder to exit the application.
+    fn request_exit_application(&self) {}
+
+    /// Request the embedder to start a window drag operation.
+    /// The `webview_id` can be used to identify which window to drag.
+    fn request_start_window_drag(&self, _webview_id: base::id::WebViewId) {}
+
+    /// Request the embedder to start a window resize operation.
+    /// The `webview_id` can be used to identify which window to resize.
+    fn request_start_window_resize(&self, _webview_id: base::id::WebViewId) {}
 }
 
 pub(crate) struct DefaultServoDelegate;

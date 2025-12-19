@@ -37,7 +37,7 @@ use crate::pipeline_details::PipelineDetails;
 use crate::refresh_driver::BaseRefreshDriver;
 use crate::touch::{PendingTouchInputEvent, TouchHandler, TouchMoveAllowed, TouchSequenceState};
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub(crate) struct ScrollEvent {
     /// Scroll by this offset, or to Start or End
     pub scroll: Scroll,
@@ -72,6 +72,18 @@ pub(crate) struct ScrollResult {
 pub(crate) enum PinchZoomResult {
     DidPinchZoom,
     DidNotPinchZoom,
+}
+
+/// Result of processing pending scroll and pinch zoom events.
+#[derive(Debug)]
+pub(crate) struct ScrollZoomProcessingResult {
+    /// Whether pinch zoom occurred.
+    pub pinch_zoom_result: PinchZoomResult,
+    /// The scroll result if scrolling was consumed.
+    pub scroll_result: Option<ScrollResult>,
+    /// The unconsumed scroll event if scrolling was not consumed.
+    /// This can be used to bubble the scroll to a parent webview.
+    pub unconsumed_scroll: Option<ScrollEvent>,
 }
 
 /// A renderer for a libservo `WebView`. This is essentially the [`ServoRenderer`]'s interface to a
@@ -115,6 +127,10 @@ pub(crate) struct WebViewRenderer {
     /// and initial values for zoom derived from the `viewport` meta tag in web content.
     viewport_description: Option<ViewportDescription>,
 
+    /// Whether this is an embedded webview. Embedded webviews have different zoom behavior:
+    /// page zoom is applied inside the display list rather than as an external transform.
+    is_embedded_webview: bool,
+
     //
     // Data that is shared with the parent renderer.
     //
@@ -153,6 +169,7 @@ impl WebViewRenderer {
             hidden: false,
             animating: false,
             viewport_description: None,
+            is_embedded_webview: false,
             embedder_to_constellation_sender,
             refresh_driver,
             webrender_document,
@@ -186,6 +203,16 @@ impl WebViewRenderer {
     pub(crate) fn set_hidden(&mut self, new_value: bool) -> bool {
         let old_value = std::mem::replace(&mut self.hidden, new_value);
         new_value != old_value
+    }
+
+    /// Mark this [`WebViewRenderer`] as an embedded webview. This affects how page zoom is applied:
+    /// for embedded webviews, zoom is applied inside the display list rather than externally.
+    pub(crate) fn set_is_embedded_webview(&mut self, is_embedded: bool) {
+        self.is_embedded_webview = is_embedded;
+        // When becoming an embedded webview, resend window size with the new zoom handling
+        if is_embedded {
+            self.send_window_size_message();
+        }
     }
 
     /// Returns the [`PipelineDetails`] for the given [`PipelineId`], creating it if needed.
@@ -353,10 +380,9 @@ impl WebViewRenderer {
                     _ => None,
                 }
                 .or_else(|| self.hit_test(render_api, point).into_iter().nth(0));
-                if hit_test_result.is_none() {
-                    warn!("Empty hit test result for input event, ignoring.");
-                    return false;
-                }
+                // Even if WebRender hit test returns empty, we still send the event to
+                // the script thread for DOM hit testing. The script thread will use the
+                // original event point for DOM hit testing when hit_test_result is None.
                 hit_test_result
             },
             None => None,
@@ -673,6 +699,89 @@ impl WebViewRenderer {
         self.on_scroll_window_event(scroll, point);
     }
 
+    /// Try to scroll the root scroll node in the root pipeline without hit testing.
+    /// Only tries the root scroll node (document viewport) to allow proper scroll
+    /// bubbling to parent webviews when the embedded content can't scroll in the
+    /// requested direction.
+    /// Returns the scroll result without dispatching scroll events (caller should dispatch).
+    fn try_scroll_root_pipeline(
+        &mut self,
+        scroll_location: ScrollLocation,
+    ) -> Option<ScrollResult> {
+        let root_pipeline_id = self.root_pipeline_id?;
+        let root_pipeline = self.pipelines.get_mut(&root_pipeline_id)?;
+
+        // Only try the root scroll node (ExternalScrollId(0, pipeline_id)), not all nodes.
+        // This ensures that if the document viewport can't scroll in the requested
+        // direction, the scroll event bubbles up to the parent webview instead of
+        // being captured by some random scrollable element elsewhere on the page.
+        let root_scroll_id = ExternalScrollId(0, root_pipeline_id.into());
+        let (external_scroll_id, offset) = root_pipeline.scroll_tree.scroll_node_or_ancestor(
+            root_scroll_id,
+            scroll_location,
+            ScrollType::InputEvents,
+        )?;
+
+        let hit_test_result = PaintHitTestResult {
+            pipeline_id: root_pipeline_id,
+            point_in_viewport: Default::default(),
+            external_scroll_id,
+        };
+
+        Some(ScrollResult {
+            hit_test_result,
+            external_scroll_id,
+            offset,
+        })
+    }
+
+    /// Try to scroll any scrollable node in the parent document.
+    /// This is used for bubbling scroll events from embedded iframes where
+    /// hit-testing in layout coordinates doesn't work because the visual
+    /// position has changed due to scrolling.
+    ///
+    /// Unlike `try_scroll_root_pipeline` which only tries the root scroll node,
+    /// this method tries ALL scroll nodes because the parent's scrollable element
+    /// (like a horizontal panel container) might not be the root scroll node.
+    pub(crate) fn try_scroll_any(&mut self, scroll: Scroll) -> Option<ScrollResult> {
+        let device_pixels_per_page_pixel = self.device_pixels_per_page_pixel();
+
+        let scroll_location = match scroll {
+            Scroll::Delta(delta) => {
+                let delta = delta.as_device_vector(device_pixels_per_page_pixel);
+                let delta_for_scroll = delta / device_pixels_per_page_pixel;
+                ScrollLocation::Delta(delta_for_scroll.cast_unit())
+            },
+            Scroll::Start => ScrollLocation::Start,
+            Scroll::End => ScrollLocation::End,
+        };
+
+        let root_pipeline_id = self.root_pipeline_id?;
+        let root_pipeline = self.pipelines.get_mut(&root_pipeline_id)?;
+
+        // Try any scrollable node in the tree, not just the root.
+        // This is needed for parent bubbling because the scrollable element
+        // (like a horizontal panel container) might not be the root scroll node.
+        let (external_scroll_id, offset) = root_pipeline
+            .scroll_tree
+            .try_scroll_any_node(scroll_location, ScrollType::InputEvents)?;
+
+        let hit_test_result = PaintHitTestResult {
+            pipeline_id: root_pipeline_id,
+            point_in_viewport: Default::default(),
+            external_scroll_id,
+        };
+
+        self.send_scroll_positions_to_layout_for_pipeline(root_pipeline_id);
+        self.dispatch_scroll_event(external_scroll_id, hit_test_result.clone());
+
+        Some(ScrollResult {
+            hit_test_result,
+            external_scroll_id,
+            offset,
+        })
+    }
+
     fn on_scroll_window_event(&mut self, scroll: Scroll, cursor: DevicePoint) {
         self.pending_scroll_zoom_events
             .push(ScrollZoomEvent::Scroll(ScrollEvent {
@@ -682,18 +791,25 @@ impl WebViewRenderer {
             }));
     }
 
-    /// Process pending scroll events for this [`WebViewRenderer`]. Returns a tuple containing:
+    /// Process pending scroll events for this [`WebViewRenderer`]. Returns a
+    /// [`ScrollZoomProcessingResult`] containing:
     ///
-    ///  - A boolean that is true if a zoom occurred.
-    ///  - An optional [`ScrollResult`] if a scroll occurred.
+    ///  - Whether pinch zoom occurred.
+    ///  - An optional [`ScrollResult`] if scrolling was consumed.
+    ///  - An optional unconsumed [`ScrollEvent`] if scrolling was not consumed, which can
+    ///    be forwarded to a parent webview.
     ///
     /// It is up to the caller to ensure that these events update the rendering appropriately.
     pub(crate) fn process_pending_scroll_and_pinch_zoom_events(
         &mut self,
         render_api: &RenderApi,
-    ) -> (PinchZoomResult, Option<ScrollResult>) {
+    ) -> ScrollZoomProcessingResult {
         if self.pending_scroll_zoom_events.is_empty() {
-            return (PinchZoomResult::DidNotPinchZoom, None);
+            return ScrollZoomProcessingResult {
+                pinch_zoom_result: PinchZoomResult::DidNotPinchZoom,
+                scroll_result: None,
+                unconsumed_scroll: None,
+            };
         }
 
         // Batch up all scroll events and changes to pinch zoom into a single change, or
@@ -747,15 +863,24 @@ impl WebViewRenderer {
             }
         }
 
+        // Save the original scroll before pan() modifies it, so we can return it
+        // as unconsumed if neither pan nor scroll consumed the event.
+        let original_scroll_event = combined_scroll_event;
+
         // When zoomed in via pinch zoom, first try to move the center of the zoom and use the rest
         // of the delta for scrolling. This allows moving the zoomed into viewport around in the
         // unzoomed viewport before actually scrolling the underlying layers.
-        if let Some(combined_scroll_event) = combined_scroll_event.as_mut() {
-            new_pinch_zoom.pan(
-                &mut combined_scroll_event.scroll,
-                self.device_pixels_per_page_pixel(),
-            )
-        }
+        let pan_consumed_scroll =
+            if let Some(combined_scroll_event) = combined_scroll_event.as_mut() {
+                let original_scroll = combined_scroll_event.scroll;
+                new_pinch_zoom.pan(
+                    &mut combined_scroll_event.scroll,
+                    self.device_pixels_per_page_pixel(),
+                );
+                original_scroll != combined_scroll_event.scroll
+            } else {
+                false
+            };
 
         let scroll_result = combined_scroll_event.and_then(|combined_event| {
             self.scroll_node_at_device_point(
@@ -764,6 +889,21 @@ impl WebViewRenderer {
                 combined_event.scroll,
             )
         });
+
+        // Determine if the scroll was consumed or not.
+        // If scroll failed and pan didn't consume anything, return the original scroll event
+        // so it can bubble up to the parent. If pan consumed some delta, return the remaining
+        // (post-pan) scroll as unconsumed.
+        let unconsumed_scroll = if scroll_result.is_some() {
+            None
+        } else if pan_consumed_scroll {
+            // Pan consumed some scroll, return the remaining delta (which might be zero)
+            combined_scroll_event
+        } else {
+            // Nothing consumed the scroll, return the original to bubble up
+            original_scroll_event
+        };
+
         if let Some(ref scroll_result) = scroll_result {
             self.send_scroll_positions_to_layout_for_pipeline(
                 scroll_result.hit_test_result.pipeline_id,
@@ -782,14 +922,18 @@ impl WebViewRenderer {
             self.send_pinch_zoom_infos_to_script();
         }
 
-        (pinch_zoom_result, scroll_result)
+        ScrollZoomProcessingResult {
+            pinch_zoom_result,
+            scroll_result,
+            unconsumed_scroll,
+        }
     }
 
     /// Perform a hit test at the given [`DevicePoint`] and apply the [`Scroll`]
     /// scrolling to the applicable scroll node under that point. If a scroll was
     /// performed, returns the hit test result contains [`PipelineId`] of the node
     /// scrolled, the id, and the final scroll delta.
-    fn scroll_node_at_device_point(
+    pub(crate) fn scroll_node_at_device_point(
         &mut self,
         render_api: &RenderApi,
         cursor: DevicePoint,
@@ -817,7 +961,10 @@ impl WebViewRenderer {
         // its ancestor pipelines.
         let mut previous_pipeline_id = None;
         for hit_test_result in hit_test_results {
-            let pipeline_details = self.pipelines.get_mut(&hit_test_result.pipeline_id)?;
+            let Some(pipeline_details) = self.pipelines.get_mut(&hit_test_result.pipeline_id)
+            else {
+                continue;
+            };
             if previous_pipeline_id.replace(hit_test_result.pipeline_id) !=
                 Some(hit_test_result.pipeline_id)
             {
@@ -844,7 +991,11 @@ impl WebViewRenderer {
                 }
             }
         }
-        None
+
+        // If hit test returned no matching pipelines (e.g., for embedded webviews where
+        // coordinates are in embedded space but hit test uses parent's WebRender document),
+        // fall back to scrolling the root scroll node in our root pipeline.
+        self.try_scroll_root_pipeline(scroll_location)
     }
 
     /// Scroll the viewport (root pipeline, root scroll node) of this WebView, but first
@@ -1000,20 +1151,45 @@ impl WebViewRenderer {
     }
 
     fn send_window_size_message(&self) {
-        // The device pixel ratio used by the style system should include the scale from page pixels
-        // to device pixels, but not including any pinch zoom.
+        // Both top-level and embedded webviews include page_zoom in hidpi_scale_factor
+        // to cause layout to reflow at the zoomed viewport size.
+        //
+        // The difference is in how the visual scaling is applied:
+        // - Top-level: zoom transform applied externally by the painter as a reference frame
+        // - Embedded: zoom transform applied inside the display list via page_zoom_for_rendering
+        //
+        // This matches Firefox/servoshell behavior where zoom causes layout reflow.
         let device_pixel_ratio = self.device_pixels_per_page_pixel_not_including_pinch_zoom();
         let initial_viewport = self.rect.size().to_f32() / device_pixel_ratio;
-        let _ = self.embedder_to_constellation_sender.send(
-            EmbedderToConstellationMessage::ChangeViewportDetails(
-                self.id,
-                ViewportDetails {
-                    hidpi_scale_factor: device_pixel_ratio,
-                    size: initial_viewport,
-                },
-                WindowSizeType::Resize,
-            ),
-        );
+
+        if self.is_embedded_webview {
+            let page_zoom = self.page_zoom.get();
+            let _ = self.embedder_to_constellation_sender.send(
+                EmbedderToConstellationMessage::ChangeViewportDetails(
+                    self.id,
+                    ViewportDetails {
+                        hidpi_scale_factor: device_pixel_ratio,
+                        size: initial_viewport,
+                        page_zoom_for_rendering: Some(page_zoom),
+                    },
+                    WindowSizeType::Resize,
+                ),
+            );
+        } else {
+            // For top-level webviews: no page_zoom_for_rendering needed since the
+            // painter applies the zoom transform externally.
+            let _ = self.embedder_to_constellation_sender.send(
+                EmbedderToConstellationMessage::ChangeViewportDetails(
+                    self.id,
+                    ViewportDetails {
+                        hidpi_scale_factor: device_pixel_ratio,
+                        size: initial_viewport,
+                        page_zoom_for_rendering: None,
+                    },
+                    WindowSizeType::Resize,
+                ),
+            );
+        }
     }
 
     /// Set the `hidpi_scale_factor` for this renderer, returning `true` if the value actually changed.
@@ -1079,8 +1255,21 @@ impl WebViewRenderer {
         if let Some(wheel_event) = self.pending_wheel_events.remove(&id) {
             if !result.contains(InputEventResult::DefaultPrevented) {
                 // A scroll delta for a wheel event is the inverse of the wheel delta.
-                let scroll_delta =
+                let mut scroll_delta =
                     DeviceVector2D::new(-wheel_event.delta.x as f32, -wheel_event.delta.y as f32);
+
+                // Apply direction locking to prevent diagonal scrolls from interfering.
+                // When one axis dominates, zero out the minor axis.
+                // This helps horizontal panel switching work correctly when the user
+                // intends to scroll horizontally but the trackpad sends diagonal events.
+                let abs_dx = scroll_delta.x.abs();
+                let abs_dy = scroll_delta.y.abs();
+                if abs_dx > abs_dy {
+                    scroll_delta.y = 0.0;
+                } else {
+                    scroll_delta.x = 0.0;
+                }
+
                 self.notify_scroll_event(Scroll::Delta(scroll_delta.into()), wheel_event.point);
             }
         }

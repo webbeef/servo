@@ -7,7 +7,7 @@ use std::ptr;
 use std::rc::Rc;
 
 use base::generic_channel;
-use base::generic_channel::GenericSend;
+use base::generic_channel::{GenericSend, channel};
 use base::id::{BrowsingContextId, PipelineId, WebViewId};
 use constellation_traits::{
     AuxiliaryWebViewCreationRequest, LoadData, LoadOrigin, NavigationHistoryBehavior,
@@ -293,8 +293,9 @@ impl WindowProxy {
         &self,
         name: DOMString,
         noopener: bool,
+        target_url: Option<ServoUrl>,
     ) -> Option<DomRoot<WindowProxy>> {
-        let (response_sender, response_receiver) = ipc::channel().unwrap();
+        let (response_sender, response_receiver) = channel().unwrap();
         let window = self
             .currently_active
             .get()
@@ -328,6 +329,7 @@ impl WindowProxy {
             opener_webview_id: window.webview_id(),
             opener_pipeline_id: self.currently_active.get().unwrap(),
             response_sender,
+            target_url,
         };
         let constellation_msg = ScriptToConstellationMessage::CreateAuxiliaryWebView(load_info);
         window.send_to_constellation(constellation_msg);
@@ -346,6 +348,8 @@ impl WindowProxy {
             // Use the current `WebView`'s theme initially, but the embedder may
             // change this later.
             theme: window.theme(),
+            is_embedded_webview: false,
+            hide_focus: false,
         };
 
         with_script_thread(|script_thread| {
@@ -504,14 +508,32 @@ impl WindowProxy {
         // (TODO) Step 11. Let referrerPolicy be the empty string.
         // (TODO) Step 12. If noreferrer is true, then set referrerPolicy to "no-referrer".
 
+        // Resolve the target URL early so we can pass it to choose_browsing_context.
+        // This is needed for embedded webviews where the embedder needs to know what URL
+        // will be navigated to before creating the new browsing context.
+        let target_url = if !url.is_empty() {
+            let existing_document = self
+                .currently_active
+                .get()
+                .and_then(ScriptThread::find_document)
+                .unwrap();
+            match existing_document.url().join(&url) {
+                Ok(resolved_url) => Some(resolved_url),
+                Err(_) => return Err(Error::Syntax(None)),
+            }
+        } else {
+            None
+        };
+
         // Step 13 - 14
         // Let targetNavigable and windowType be the result of applying the rules for
         // choosing a navigable given target, sourceDocument's node navigable, and noopener.
         // If targetNavigable is null, then return null.
-        let (chosen, new) = match self.choose_browsing_context(non_empty_target, noopener) {
-            (Some(chosen), new) => (chosen, new),
-            (None, _) => return Ok(None),
-        };
+        let (chosen, new) =
+            match self.choose_browsing_context(non_empty_target, noopener, target_url.clone()) {
+                (Some(chosen), new) => (chosen, new),
+                (None, _) => return Ok(None),
+            };
         // TODO Step 15.2, Set up browsing context features for targetNavigable's
         // active browsing context given tokenizedFeatures.
         let target_document = match chosen.document() {
@@ -526,16 +548,12 @@ impl WindowProxy {
         let target_window = target_document.window();
         // Step 15.3 and 15.4 will have happened elsewhere,
         // since we've created a new browsing context and loaded it with about:blank.
-        if !url.is_empty() {
+        if let Some(url) = target_url {
             let existing_document = self
                 .currently_active
                 .get()
                 .and_then(ScriptThread::find_document)
                 .unwrap();
-            let url = match existing_document.url().join(&url) {
-                Ok(url) => url,
-                Err(_) => return Err(Error::Syntax(None)),
-            };
             let referrer = if noreferrer {
                 Referrer::NoReferrer
             } else {
@@ -599,6 +617,7 @@ impl WindowProxy {
         &self,
         name: DOMString,
         noopener: bool,
+        target_url: Option<ServoUrl>,
     ) -> (Option<DomRoot<WindowProxy>>, bool) {
         match name.to_lowercase().as_ref() {
             "" | "_self" => {
@@ -616,7 +635,10 @@ impl WindowProxy {
                 // Step 5
                 (Some(DomRoot::from_ref(self.top())), false)
             },
-            "_blank" => (self.create_auxiliary_browsing_context(name, noopener), true),
+            "_blank" => (
+                self.create_auxiliary_browsing_context(name, noopener, target_url),
+                true,
+            ),
             _ => {
                 // Step 6.
                 // TODO: expand the search to all 'familiar' bc,
@@ -624,7 +646,10 @@ impl WindowProxy {
                 // See https://html.spec.whatwg.org/multipage/#familiar-with
                 match ScriptThread::find_window_proxy_by_name(&name) {
                     Some(proxy) => (Some(proxy), false),
-                    None => (self.create_auxiliary_browsing_context(name, noopener), true),
+                    None => (
+                        self.create_auxiliary_browsing_context(name, noopener, target_url),
+                        true,
+                    ),
                 }
             },
         }

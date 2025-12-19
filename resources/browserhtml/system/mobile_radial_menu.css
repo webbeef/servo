@@ -1,0 +1,216 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+
+:host {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  z-index: var(--z-modal);
+  pointer-events: none;
+}
+
+:host([open]) {
+  pointer-events: auto;
+}
+
+.overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.3);
+  opacity: 0;
+  transition: opacity 0.15s ease;
+  z-index: 1000;
+}
+
+:host([open]) .overlay {
+  opacity: 1;
+}
+
+.menu {
+  position: absolute;
+  width: 200px;
+  height: 200px;
+  margin-left: -100px;
+  margin-top: -100px;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+  z-index: 2000;
+}
+
+:host([open]) .menu {
+  opacity: 1;
+}
+
+.center {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 50px;
+  height: 50px;
+  margin: -25px;
+  background: var(--bg-menu);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
+  transform: scale(0);
+  transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+:host([open]) .center {
+  transform: scale(1);
+}
+
+.center-dot {
+  width: 8px;
+  height: 8px;
+  background: var(--color-text-tertiary);
+  border-radius: 50%;
+}
+
+.zone {
+  position: absolute;
+  width: 60px;
+  height: 60px;
+  margin: -30px;
+  background: var(--bg-menu);
+  border-radius: 50%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
+  cursor: pointer;
+  /* Start at center, scale down */
+  transform: translate(var(--start-x), var(--start-y)) scale(0);
+  transition:
+    transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1),
+    background 0.15s ease,
+    box-shadow 0.15s ease;
+}
+
+:host([open]) .zone {
+  transform: translate(0, 0) scale(1);
+}
+
+/* Staggered animation delays for each zone */
+.zone[data-zone="0"] {
+  transition-delay: 0.02s;
+}
+.zone[data-zone="1"] {
+  transition-delay: 0.04s;
+}
+.zone[data-zone="2"] {
+  transition-delay: 0.06s;
+}
+.zone[data-zone="3"] {
+  transition-delay: 0.08s;
+}
+.zone[data-zone="4"] {
+  transition-delay: 0.1s;
+}
+.zone[data-zone="5"] {
+  transition-delay: 0.12s;
+}
+.zone[data-zone="6"] {
+  transition-delay: 0.14s;
+}
+.zone[data-zone="7"] {
+  transition-delay: 0.16s;
+}
+
+/* Remove delay when closing */
+:host(:not([open])) .zone {
+  transition-delay: 0s;
+}
+
+.zone lucide-icon {
+  font-size: 20px;
+  color: var(--color-text-menu);
+  transition: color 0.15s ease;
+}
+
+.zone:active {
+  transform: translate(0, 0) scale(0.9);
+  background: var(--color-focus-ring);
+  box-shadow: 0 4px 20px rgba(0, 122, 255, 0.5);
+}
+
+.zone.disabled {
+  opacity: 0.3;
+  pointer-events: none;
+}
+
+.zone.disabled lucide-icon {
+  color: var(--color-text-tertiary);
+}
+
+/* Position zones in a circle */
+/* Top */
+.zone[data-zone="0"] {
+  top: 15%;
+  left: 50%;
+  --start-x: 0;
+  --start-y: 35%;
+}
+
+/* Top-Right */
+.zone[data-zone="1"] {
+  top: 22%;
+  left: 78%;
+  --start-x: -28%;
+  --start-y: 28%;
+}
+
+/* Right */
+.zone[data-zone="2"] {
+  top: 50%;
+  left: 85%;
+  --start-x: -35%;
+  --start-y: 0;
+}
+
+/* Bottom-Right */
+.zone[data-zone="3"] {
+  top: 78%;
+  left: 78%;
+  --start-x: -28%;
+  --start-y: -28%;
+}
+
+/* Bottom */
+.zone[data-zone="4"] {
+  top: 85%;
+  left: 50%;
+  --start-x: 0;
+  --start-y: -35%;
+}
+
+/* Bottom-Left */
+.zone[data-zone="5"] {
+  top: 78%;
+  left: 22%;
+  --start-x: 28%;
+  --start-y: -28%;
+}
+
+/* Left */
+.zone[data-zone="6"] {
+  top: 50%;
+  left: 15%;
+  --start-x: 35%;
+  --start-y: 0;
+}
+
+/* Top-Left */
+.zone[data-zone="7"] {
+  top: 22%;
+  left: 22%;
+  --start-x: 28%;
+  --start-y: 28%;
+}

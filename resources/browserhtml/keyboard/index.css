@@ -1,0 +1,81 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: 4px;
+  background: #2a2a2a;
+  font-family: sans-serif;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 100%;
+}
+
+.keyboard {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 600px;
+  width: 100%;
+}
+
+.row {
+  display: flex;
+  justify-content: center;
+  gap: 4px;
+}
+
+.key {
+  width: 30px;
+  height: 36px;
+  padding: 0 10px;
+  background: #404040;
+  border: none;
+  border-radius: 6px;
+  color: white;
+  font-size: 16px;
+  font-weight: 500;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.1s ease;
+  user-select: none;
+}
+
+.key:active {
+  background: #808080;
+  transform: translateY(1px);
+}
+
+.key.wide {
+  width: 54px;
+}
+
+.key.extra-wide {
+  width: 72px;
+}
+
+.key.space {
+  flex: 1;
+  width: 280px;
+}
+
+.key.shift.active {
+  background: #5a8cff;
+}
+
+/* Number row keys are slightly smaller */
+.row-numbers .key {
+  min-width: 32px;
+  font-size: 14px;
+}
+
+/* Hidden state */
+.keyboard.hidden {
+  display: none;
+}

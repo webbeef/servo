@@ -116,6 +116,7 @@ impl ScriptWindowProxies {
         webview_id: WebViewId,
         parent_info: Option<PipelineId>,
         opener: Option<BrowsingContextId>,
+        is_embedded_webview: bool,
     ) -> DomRoot<WindowProxy> {
         if let Some(window_proxy) = self.get(browsing_context_id) {
             // Note: we do not set the window to be the currently-active one,
@@ -127,12 +128,29 @@ impl ScriptWindowProxies {
                 .borrow()
                 .find_iframe(parent_id, browsing_context_id)
         });
-        let parent_browsing_context = match (parent_info, iframe.as_ref()) {
-            (_, Some(iframe)) => Some(iframe.owner_window().window_proxy()),
-            (Some(parent_id), _) => {
-                self.remote_window_proxy(senders, window.upcast(), webview_id, parent_id, opener)
-            },
-            _ => None,
+
+        // For embedded webview iframes, treat them as having no parent so that
+        // window.parent === window.self returns true.
+        // We check both the passed-in flag AND the iframe (if found in same thread).
+        let is_embedded_webview = is_embedded_webview ||
+            iframe
+                .as_ref()
+                .is_some_and(|iframe| iframe.is_embedded_webview());
+
+        let parent_browsing_context = if is_embedded_webview {
+            None
+        } else {
+            match (parent_info, iframe.as_ref()) {
+                (_, Some(iframe)) => Some(iframe.owner_window().window_proxy()),
+                (Some(parent_id), _) => self.remote_window_proxy(
+                    senders,
+                    window.upcast(),
+                    webview_id,
+                    parent_id,
+                    opener,
+                ),
+                _ => None,
+            }
         };
 
         let opener_browsing_context = opener.and_then(|id| self.find_window_proxy(id));
@@ -142,11 +160,19 @@ impl ScriptWindowProxies {
             opener_browsing_context.as_deref(),
         );
 
+        // For embedded webviews, don't pass the iframe as frame_element since
+        // they are top-level browsing contexts.
+        let frame_element = if is_embedded_webview {
+            None
+        } else {
+            iframe.as_deref().map(Castable::upcast)
+        };
+
         let window_proxy = WindowProxy::new(
             window,
             browsing_context_id,
             webview_id,
-            iframe.as_deref().map(Castable::upcast),
+            frame_element,
             parent_browsing_context.as_deref(),
             opener,
             creator,

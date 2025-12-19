@@ -7,8 +7,8 @@ use std::rc::Rc;
 
 use base::id::{BrowsingContextId, PipelineId, WebViewId};
 use constellation_traits::{
-    IFrameLoadInfo, IFrameLoadInfoWithData, JsEvalResult, LoadData, LoadOrigin,
-    NavigationHistoryBehavior, ScriptToConstellationMessage,
+    EmbeddedWebViewCreationRequest, IFrameLoadInfo, IFrameLoadInfoWithData, JsEvalResult, LoadData,
+    LoadOrigin, NavigationHistoryBehavior, ScriptToConstellationMessage,
 };
 use content_security_policy::sandboxing_directive::{
     SandboxingFlagSet, parse_a_sandboxing_directive,
@@ -16,34 +16,40 @@ use content_security_policy::sandboxing_directive::{
 use dom_struct::dom_struct;
 use embedder_traits::ViewportDetails;
 use html5ever::{LocalName, Prefix, local_name, ns};
+use ipc_channel::ipc;
 use js::rust::HandleObject;
 use net_traits::ReferrerPolicy;
 use net_traits::request::Destination;
 use profile_traits::ipc as ProfiledIpc;
 use script_traits::{NewPipelineInfo, UpdatePipelineIdReason};
 use servo_url::ServoUrl;
+use style::Atom;
 use style::attr::{AttrValue, LengthOrPercentageOrAuto};
-use stylo_atoms::Atom;
 
 use crate::document_loader::{LoadBlocker, LoadType};
 use crate::dom::attr::Attr;
 use crate::dom::bindings::cell::DomRefCell;
+use crate::dom::bindings::codegen::Bindings::EmbeddedWebViewBinding::ScreenshotOptions;
 use crate::dom::bindings::codegen::Bindings::HTMLIFrameElementBinding::HTMLIFrameElementMethods;
 use crate::dom::bindings::codegen::Bindings::WindowBinding::Window_Binding::WindowMethods;
 use crate::dom::bindings::codegen::UnionTypes::TrustedHTMLOrString;
 use crate::dom::bindings::error::Fallible;
 use crate::dom::bindings::inheritance::Castable;
+use crate::dom::bindings::num::Finite;
 use crate::dom::bindings::reflector::DomGlobal;
 use crate::dom::bindings::root::{DomRoot, LayoutDom, MutNullableDom};
 use crate::dom::bindings::str::{DOMString, USVString};
+use crate::dom::console::Console;
 use crate::dom::document::Document;
 use crate::dom::domtokenlist::DOMTokenList;
 use crate::dom::element::{
     AttributeMutation, Element, LayoutElementHelpers, reflect_referrer_policy_attribute,
 };
+use crate::dom::embedder::Embedder;
 use crate::dom::eventtarget::EventTarget;
 use crate::dom::html::htmlelement::HTMLElement;
 use crate::dom::node::{BindContext, Node, NodeDamage, NodeTraits, UnbindContext};
+use crate::dom::promise::Promise;
 use crate::dom::trustedhtml::TrustedHTML;
 use crate::dom::virtualmethods::VirtualMethods;
 use crate::dom::windowproxy::WindowProxy;
@@ -62,6 +68,12 @@ enum ProcessingMode {
     FirstTime,
     NotFirstTime,
 }
+
+// Re-export PendingDialogSender from the embedded webview module
+pub(crate) use super::htmlembeddedwebview::PendingDialogSender;
+// Type alias for pending permission senders
+pub(crate) type PendingPermissionSender =
+    base::generic_channel::GenericSender<embedder_traits::AllowOrDeny>;
 
 #[dom_struct]
 pub(crate) struct HTMLIFrameElement {
@@ -90,6 +102,30 @@ pub(crate) struct HTMLIFrameElement {
     /// while script at this point(when the flag is set)
     /// expects those to run only for the navigated documented.
     pending_navigation: Cell<bool>,
+    /// Whether this iframe is in "embed" mode (hosting a top-level webview).
+    is_embedded_webview: Cell<bool>,
+    /// The embedded webview ID when in embed mode.
+    #[no_trace]
+    embedded_webview_id: Cell<Option<WebViewId>>,
+    /// History tracking for embedded webviews - the list of URLs in the session history.
+    #[no_trace]
+    embedded_history: DomRefCell<Vec<ServoUrl>>,
+    /// The current index in the embedded webview history.
+    embedded_history_index: Cell<usize>,
+    /// Pending dialog sender for embedded webviews.
+    /// When an embedded webview calls alert/confirm/prompt, the IPC sender is stored here
+    /// so the parent shell can respond directly via respondToAlert/Confirm/Prompt.
+    #[ignore_malloc_size_of = "Channels are hard"]
+    #[no_trace]
+    pending_dialog: DomRefCell<Option<PendingDialogSender>>,
+    /// Pending permission sender for embedded webviews.
+    /// When an embedded webview requests a permission, the IPC sender is stored here
+    /// so the parent shell can respond directly via respondToPermissionPrompt.
+    #[ignore_malloc_size_of = "Channels are hard"]
+    #[no_trace]
+    pending_permission_sender: DomRefCell<Option<PendingPermissionSender>>,
+    /// Current page zoom level for embedded webviews (default 1.0 = 100%).
+    page_zoom: Cell<f64>,
 }
 
 impl HTMLIFrameElement {
@@ -226,6 +262,8 @@ impl HTMLIFrameElement {
                     viewport_details,
                     user_content_manager_id: None,
                     theme: window.theme(),
+                    is_embedded_webview: false,
+                    hide_focus: false,
                 };
 
                 self.pipeline_id.set(Some(new_pipeline_id));
@@ -440,6 +478,143 @@ impl HTMLIFrameElement {
         );
     }
 
+    /// Create an embedded webview for this iframe when the "embed" attribute is present.
+    /// This creates a new top-level WebView instead of a nested browsing context.
+    fn create_embedded_webview(&self) {
+        let url = self.get_url();
+        let document = self.owner_document();
+        let window = self.owner_window();
+
+        // Check if the parent document's origin is allowed to create embedded webviews
+        let parent_url = document.url();
+        if !Embedder::is_allowed_to_embed_for_url(&parent_url) {
+            let message = format!(
+                "Embedded webview creation blocked: the 'embed' attribute on iframes is only \
+                 allowed for privileged origins. Current origin '{}' is not allowed.",
+                parent_url.origin().ascii_serialization()
+            );
+            // Log error to web console so developers can see why it failed
+            Console::internal_warn(window.as_global_scope(), DOMString::from(message.clone()));
+            warn!("{}", message);
+
+            // Fall back to non-functional state (iframe won't navigate)
+            self.is_embedded_webview.set(false);
+            return;
+        }
+
+        let pipeline_id = window.pipeline_id();
+        let parent_webview_id = window.window_proxy().webview_id();
+
+        // Create load data for the embedded webview
+        let mut load_data = LoadData::new(
+            LoadOrigin::Script(document.origin().snapshot()),
+            url,
+            Some(document.base_url()),
+            Some(pipeline_id),
+            window.as_global_scope().get_referrer(),
+            document.get_referrer_policy(),
+            Some(window.as_global_scope().is_secure_context()),
+            Some(document.insecure_requests_policy()),
+            document.has_trustworthy_ancestor_or_current_origin(),
+            self.sandboxing_flag_set(),
+        );
+        load_data.destination = Destination::IFrame;
+        load_data.policy_container = Some(window.as_global_scope().policy_container());
+
+        // Clone load_data for spawning the pipeline later
+        let load_data_for_spawn = load_data.clone();
+        let theme = window.theme();
+
+        // Get the iframe's size to use as the viewport for the embedded webview.
+        // We use border_box which gives us the size in CSS pixels.
+        let hidpi_scale_factor = window.device_pixel_ratio();
+        let viewport_details = self
+            .upcast::<Node>()
+            .border_box()
+            .map(|border_box| ViewportDetails {
+                size: euclid::Size2D::new(
+                    border_box.size.width.to_f32_px(),
+                    border_box.size.height.to_f32_px(),
+                ),
+                hidpi_scale_factor,
+                page_zoom_for_rendering: None,
+            })
+            .unwrap_or_else(|| ViewportDetails {
+                hidpi_scale_factor,
+                ..Default::default()
+            });
+
+        // Create an IPC channel for the response
+        let (response_sender, response_receiver) =
+            ipc::channel().expect("Failed to create IPC channel for embedded webview");
+
+        let hide_focus = self.has_hide_focus();
+        let request = EmbeddedWebViewCreationRequest {
+            load_data,
+            parent_pipeline_id: pipeline_id,
+            parent_webview_id,
+            viewport_details,
+            theme,
+            hide_focus,
+            response_sender,
+        };
+
+        // Send the request to the constellation
+        let global = window.as_global_scope();
+        let msg = ScriptToConstellationMessage::CreateEmbeddedWebView(request);
+        global.script_to_constellation_chan().send(msg).unwrap();
+
+        // Block waiting for the response
+        match response_receiver.recv() {
+            Ok(Some(response)) => {
+                debug!(
+                    "Embedded webview created: webview_id={:?}, browsing_context_id={:?}, pipeline_id={:?}",
+                    response.new_webview_id,
+                    response.new_browsing_context_id,
+                    response.new_pipeline_id
+                );
+                // Store the embedded webview state
+                self.is_embedded_webview.set(true);
+                self.embedded_webview_id.set(Some(response.new_webview_id));
+                self.browsing_context_id
+                    .set(Some(response.new_browsing_context_id));
+                self.pipeline_id.set(Some(response.new_pipeline_id));
+                self.webview_id.set(Some(response.new_webview_id));
+
+                // Spawn the pipeline in the script thread
+                // Embedded webviews are top-level, so parent_info is None
+                let new_pipeline_info = NewPipelineInfo {
+                    parent_info: None,
+                    new_pipeline_id: response.new_pipeline_id,
+                    browsing_context_id: response.new_browsing_context_id,
+                    webview_id: response.new_webview_id,
+                    opener: None,
+                    load_data: load_data_for_spawn,
+                    viewport_details,
+                    user_content_manager_id: None,
+                    theme,
+                    is_embedded_webview: true,
+                    hide_focus,
+                };
+
+                with_script_thread(|script_thread| {
+                    script_thread.spawn_pipeline(new_pipeline_info);
+                });
+            },
+            Ok(None) => {
+                warn!("Embedded webview creation was rejected by embedder");
+                // Fall back to not being an embedded webview (just a static iframe)
+                self.is_embedded_webview.set(false);
+                self.embedded_webview_id.set(None);
+            },
+            Err(e) => {
+                warn!("Failed to receive embedded webview response: {:?}", e);
+                self.is_embedded_webview.set(false);
+                self.embedded_webview_id.set(None);
+            },
+        }
+    }
+
     fn destroy_nested_browsing_context(&self) {
         self.pipeline_id.set(None);
         self.pending_pipeline_id.set(None);
@@ -497,6 +672,13 @@ impl HTMLIFrameElement {
             throttled: Cell::new(false),
             script_window_proxies: ScriptThread::window_proxies(),
             pending_navigation: Default::default(),
+            is_embedded_webview: Cell::new(false),
+            embedded_webview_id: Cell::new(None),
+            embedded_history: DomRefCell::new(Vec::new()),
+            embedded_history_index: Cell::new(0),
+            pending_dialog: DomRefCell::new(None),
+            pending_permission_sender: DomRefCell::new(None),
+            page_zoom: Cell::new(1.0),
         }
     }
 
@@ -530,6 +712,149 @@ impl HTMLIFrameElement {
     #[inline]
     pub(crate) fn webview_id(&self) -> Option<WebViewId> {
         self.webview_id.get()
+    }
+
+    /// Check whether this iframe has the "embed" attribute set.
+    fn is_embed_mode(&self) -> bool {
+        self.upcast::<Element>()
+            .has_attribute(&local_name!("embed"))
+    }
+
+    /// Check whether this iframe has the "hidefocus" attribute set.
+    /// When set, the embedded webview should never receive focus.
+    fn has_hide_focus(&self) -> bool {
+        self.upcast::<Element>()
+            .has_attribute(&local_name!("hidefocus"))
+    }
+
+    /// Check if this iframe should adopt a pre-created embedded webview.
+    /// This is set via the `adopt-webview-id`, `adopt-browsing-context-id`,
+    /// and `adopt-pipeline-id` attributes, which are used when the constellation
+    /// has already created an embedded webview (e.g., from window.open in an embedded context).
+    fn get_adopt_ids(&self) -> Option<(WebViewId, BrowsingContextId, PipelineId)> {
+        let element = self.upcast::<Element>();
+
+        // All three attributes must be present
+        let webview_id_str = element.get_string_attribute(&LocalName::from("adopt-webview-id"));
+        let browsing_context_id_str =
+            element.get_string_attribute(&LocalName::from("adopt-browsing-context-id"));
+        let pipeline_id_str = element.get_string_attribute(&LocalName::from("adopt-pipeline-id"));
+
+        if webview_id_str.is_empty() ||
+            browsing_context_id_str.is_empty() ||
+            pipeline_id_str.is_empty()
+        {
+            return None;
+        }
+
+        // Parse the IDs (they are in the format "TypeName(namespace,index)")
+        let browsing_context_id = BrowsingContextId::from_string(&browsing_context_id_str.str())?;
+        let pipeline_id = PipelineId::from_string(&pipeline_id_str.str())?;
+
+        // WebViewId is "(painter_id, browsing_context_id)" - we derive it from the browsing_context_id
+        // The WebViewId is constructed from the same BrowsingContextId
+        let webview_id = WebViewId::from_string(&webview_id_str.str())?;
+
+        Some((webview_id, browsing_context_id, pipeline_id))
+    }
+
+    /// Adopt a pre-created embedded webview. This is called when the iframe has
+    /// adopt attributes set, indicating that constellation has already created
+    /// the webview and we just need to associate it with this iframe.
+    fn adopt_embedded_webview(
+        &self,
+        webview_id: WebViewId,
+        browsing_context_id: BrowsingContextId,
+        pipeline_id: PipelineId,
+        can_gc: CanGc,
+    ) {
+        debug!(
+            "<iframe> adopting embedded webview: webview_id={:?}, browsing_context_id={:?}, pipeline_id={:?}",
+            webview_id, browsing_context_id, pipeline_id
+        );
+
+        // Store the embedded webview state
+        self.is_embedded_webview.set(true);
+        self.embedded_webview_id.set(Some(webview_id));
+        self.browsing_context_id.set(Some(browsing_context_id));
+        self.pipeline_id.set(Some(pipeline_id));
+        self.webview_id.set(Some(webview_id));
+
+        // The pipeline is already spawned by the constellation, so we don't need to
+        // call spawn_pipeline here. The webview is already running.
+
+        // Remove the adopt attributes now that we've used them
+        let element = self.upcast::<Element>();
+        element.remove_attribute(&ns!(), &LocalName::from("adopt-webview-id"), can_gc);
+        element.remove_attribute(
+            &ns!(),
+            &LocalName::from("adopt-browsing-context-id"),
+            can_gc,
+        );
+        element.remove_attribute(&ns!(), &LocalName::from("adopt-pipeline-id"), can_gc);
+    }
+
+    /// Get the effective webview ID, taking into account embedded webview mode.
+    /// Returns the embedded webview ID if in embed mode, otherwise the parent webview ID.
+    #[inline]
+    pub(crate) fn embedded_webview_id(&self) -> Option<WebViewId> {
+        if self.is_embedded_webview.get() {
+            self.embedded_webview_id.get()
+        } else {
+            None
+        }
+    }
+
+    /// Returns true if this iframe is hosting an embedded webview (created with "embed" attribute).
+    /// Embedded webviews have their own top-level WebViewId and window.parent === window.self.
+    #[inline]
+    pub(crate) fn is_embedded_webview(&self) -> bool {
+        self.is_embedded_webview.get()
+    }
+
+    /// Set the embedded history entries and current index.
+    /// Called when the constellation sends history change notifications.
+    pub(crate) fn set_embedded_history(&self, entries: Vec<ServoUrl>, index: usize) {
+        *self.embedded_history.borrow_mut() = entries;
+        self.embedded_history_index.set(index);
+    }
+
+    /// Get the embedded history state as (can_go_back, can_go_forward).
+    pub(crate) fn embedded_history_state(&self) -> (bool, bool) {
+        let can_go_back = self.embedded_history_index.get() > 0;
+        let history = self.embedded_history.borrow();
+        let can_go_forward = history.len() > self.embedded_history_index.get() + 1;
+        (can_go_back, can_go_forward)
+    }
+
+    /// Set the pending dialog sender for embedded webview dialog responses.
+    pub(crate) fn set_pending_dialog(&self, sender: Option<PendingDialogSender>) {
+        *self.pending_dialog.borrow_mut() = sender;
+    }
+
+    /// Take the pending dialog sender, removing it from storage.
+    pub(crate) fn take_pending_dialog(&self) -> Option<PendingDialogSender> {
+        self.pending_dialog.borrow_mut().take()
+    }
+
+    /// Set the pending permission sender for embedded webview permission prompt responses.
+    pub(crate) fn set_pending_permission_sender(&self, sender: Option<PendingPermissionSender>) {
+        *self.pending_permission_sender.borrow_mut() = sender;
+    }
+
+    /// Take the pending permission sender, removing it from storage.
+    pub(crate) fn take_pending_permission_sender(&self) -> Option<PendingPermissionSender> {
+        self.pending_permission_sender.borrow_mut().take()
+    }
+
+    /// Get the current page zoom level.
+    pub(crate) fn get_page_zoom(&self) -> f64 {
+        self.page_zoom.get()
+    }
+
+    /// Set the page zoom level.
+    pub(crate) fn set_page_zoom(&self, zoom: f64) {
+        self.page_zoom.set(zoom);
     }
 
     #[inline]
@@ -866,6 +1191,85 @@ impl HTMLIFrameElementMethods<crate::DomTypeHolder> for HTMLIFrameElement {
     // This is specified as reflecting the name content attribute of the
     // element, not the name of the child browsing context.
     make_getter!(Name, "name");
+
+    // Servo extension: Embedded WebView methods
+    // These delegate to helper methods in htmlembeddedwebview.rs
+
+    fn Load(&self, url: USVString) -> Fallible<()> {
+        self.embedded_load(url)
+    }
+
+    fn Reload(&self) -> Fallible<()> {
+        self.embedded_reload()
+    }
+
+    fn GetPageZoom(&self) -> Fallible<Finite<f64>> {
+        self.embedded_page_zoom().map(Finite::wrap)
+    }
+
+    fn SetPageZoom(&self, zoom: Finite<f64>) -> Fallible<()> {
+        self.embedded_set_page_zoom(*zoom)
+    }
+
+    fn CanGoBack(&self) -> Fallible<bool> {
+        self.embedded_can_go_back()
+    }
+
+    fn GoBack(&self) -> Fallible<DOMString> {
+        self.embedded_go_back()
+    }
+
+    fn CanGoForward(&self) -> Fallible<bool> {
+        self.embedded_can_go_forward()
+    }
+
+    fn GoForward(&self) -> Fallible<DOMString> {
+        self.embedded_go_forward()
+    }
+
+    fn TakeScreenshot(&self, options: &ScreenshotOptions) -> Fallible<Rc<Promise>> {
+        self.embedded_take_screenshot(options)
+    }
+
+    fn RespondToSelectControl(&self, control_id: DOMString, selected_index: i32) -> Fallible<()> {
+        self.embedded_respond_to_select_control(control_id, selected_index)
+    }
+
+    fn RespondToColorPicker(
+        &self,
+        control_id: DOMString,
+        color: Option<DOMString>,
+    ) -> Fallible<()> {
+        self.embedded_respond_to_color_picker(control_id, color)
+    }
+
+    fn RespondToContextMenu(
+        &self,
+        control_id: DOMString,
+        action_id: Option<DOMString>,
+    ) -> Fallible<()> {
+        self.embedded_respond_to_context_menu(control_id, action_id)
+    }
+
+    fn CancelEmbedderControl(&self, control_id: DOMString) -> Fallible<()> {
+        self.embedded_cancel_embedder_control(control_id)
+    }
+
+    fn RespondToAlert(&self, control_id: DOMString) -> Fallible<()> {
+        self.embedded_respond_to_alert(control_id)
+    }
+
+    fn RespondToConfirm(&self, control_id: DOMString, confirmed: bool) -> Fallible<()> {
+        self.embedded_respond_to_confirm(control_id, confirmed)
+    }
+
+    fn RespondToPrompt(&self, control_id: DOMString, value: Option<DOMString>) -> Fallible<()> {
+        self.embedded_respond_to_prompt(control_id, value)
+    }
+
+    fn RespondToPermissionPrompt(&self, control_id: DOMString, allowed: bool) -> Fallible<()> {
+        self.embedded_respond_to_permission_prompt(control_id, allowed)
+    }
 }
 
 impl VirtualMethods for HTMLIFrameElement {
@@ -917,8 +1321,34 @@ impl VirtualMethods for HTMLIFrameElement {
                 // is in a document tree and has a browsing context, which is what causes
                 // the child browsing context to be created.
                 if self.upcast::<Node>().is_connected_with_browsing_context() {
-                    debug!("iframe src set while in browsing context.");
-                    self.process_the_iframe_attributes(ProcessingMode::NotFirstTime, can_gc);
+                    // For embedded webviews, navigate using the load() method instead of
+                    // processing iframe attributes (which is for regular nested iframes).
+                    if self.is_embedded_webview.get() {
+                        if let Some(webview_id) = self.embedded_webview_id.get() {
+                            let url = self.get_url();
+                            let window = self.owner_window();
+                            window
+                                .as_global_scope()
+                                .script_to_constellation_chan()
+                                .send(ScriptToConstellationMessage::EmbeddedWebViewLoad(
+                                    webview_id, url,
+                                ))
+                                .unwrap();
+                        }
+                    } else {
+                        debug!("iframe src set while in browsing context.");
+                        self.process_the_iframe_attributes(ProcessingMode::NotFirstTime, can_gc);
+                    }
+                }
+            },
+            local_name!("embed") => {
+                // The embed attribute determines whether this iframe hosts an embedded webview.
+                // Warn if it's changed after the iframe is already connected, as this is not supported.
+                if self.upcast::<Node>().is_connected_with_browsing_context() {
+                    warn!(
+                        "The 'embed' attribute on iframe should not be changed after insertion. \
+                        The iframe mode (nested vs embedded webview) is determined at insertion time."
+                    );
                 }
             },
             _ => {},
@@ -962,6 +1392,23 @@ impl VirtualMethods for HTMLIFrameElement {
 
         debug!("<iframe> running post connection steps");
 
+        // Check if this iframe should adopt a pre-created embedded webview
+        // (e.g., from window.open() in an embedded context)
+        if let Some((webview_id, browsing_context_id, pipeline_id)) = self.get_adopt_ids() {
+            debug!("<iframe> adopting pre-created embedded webview");
+            self.adopt_embedded_webview(webview_id, browsing_context_id, pipeline_id, can_gc);
+            return;
+        }
+
+        // Check if this iframe has the "embed" attribute for embedded webview mode
+        if self.is_embed_mode() {
+            debug!("<iframe> in embed mode, creating embedded webview");
+            self.create_embedded_webview();
+            // For embedded webviews, we don't process sandbox or iframe attributes
+            // the same way - the embedded webview handles its own security context
+            return;
+        }
+
         // Step 1. Create a new child navigable for insertedNode.
         self.create_nested_browsing_context(can_gc);
 
@@ -984,8 +1431,22 @@ impl VirtualMethods for HTMLIFrameElement {
     fn unbind_from_tree(&self, context: &UnbindContext, can_gc: CanGc) {
         self.super_type().unwrap().unbind_from_tree(context, can_gc);
 
-        // The iframe HTML element removing steps, given removedNode, are to destroy a child navigable given removedNode
-        self.destroy_child_navigable(can_gc);
+        // If this is an embedded webview, notify the compositor to stop tracking its rect
+        if self.is_embedded_webview.get() {
+            if let Some(embedded_webview_id) = self.embedded_webview_id.get() {
+                let window = self.owner_window();
+                let global = window.as_global_scope();
+                let msg = ScriptToConstellationMessage::RemoveEmbeddedWebView(embedded_webview_id);
+                global.script_to_constellation_chan().send(msg).unwrap();
+
+                window
+                    .paint_api()
+                    .remove_embedded_webview(embedded_webview_id);
+            }
+        } else {
+            // The iframe HTML element removing steps, given removedNode, are to destroy a child navigable given removedNode
+            self.destroy_child_navigable(can_gc);
+        }
 
         self.owner_document().invalidate_iframes_collection();
     }

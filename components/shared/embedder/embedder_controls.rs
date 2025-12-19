@@ -16,7 +16,7 @@ use servo_url::ImmutableOrigin;
 use url::Url;
 use uuid::Uuid;
 
-use crate::{InputMethodType, RgbColor};
+use crate::{AllowOrDeny, InputMethodType, PermissionFeature, RgbColor};
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
 pub struct EmbedderControlId {
     pub webview_id: WebViewId,
@@ -24,7 +24,7 @@ pub struct EmbedderControlId {
     pub index: Epoch,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum EmbedderControlRequest {
     /// Indicates that the user has activated a `<select>` element.
     SelectElement(Vec<SelectElementOptionOrOptgroup>, Option<usize>),
@@ -37,6 +37,8 @@ pub enum EmbedderControlRequest {
     InputMethod(InputMethodRequest),
     /// Indicates that the the user has triggered the display of a context menu.
     ContextMenu(ContextMenuRequest),
+    /// Indicates that a permission prompt should be shown to the user.
+    PermissionPrompt(PermissionPromptRequest),
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -61,7 +63,7 @@ pub enum SelectElementOptionOrOptgroup {
 
 /// Request to present a context menu to the user. This is triggered by things like
 /// right-clicking on web content.
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ContextMenuRequest {
     pub element_info: ContextMenuElementInformation,
     pub items: Vec<ContextMenuItem>,
@@ -130,7 +132,7 @@ pub struct ContextMenuElementInformation {
 /// Request to present an IME to the user when an editable element is focused. If `type` is
 /// [`InputMethodType::Text`], then the `text` parameter specifies the pre-existing text content and
 /// `insertion_point` the zero-based index into the string of the insertion point.
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct InputMethodRequest {
     pub input_method_type: InputMethodType,
     pub text: String,
@@ -143,7 +145,7 @@ pub struct InputMethodRequest {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct FilterPattern(pub String);
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct FilePickerRequest {
     pub origin: ImmutableOrigin,
     pub current_paths: Vec<PathBuf>,
@@ -152,12 +154,23 @@ pub struct FilePickerRequest {
     pub accept_current_paths_for_testing: bool,
 }
 
+/// Request to show a permission prompt to the user. The response should be sent
+/// via the included sender.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct PermissionPromptRequest {
+    /// The permission feature being requested.
+    pub feature: PermissionFeature,
+    /// A sender to use to respond to the permission request.
+    pub response_sender: GenericSender<AllowOrDeny>,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 pub enum EmbedderControlResponse {
     SelectElement(Option<usize>),
     ColorPicker(Option<RgbColor>),
     FilePicker(Option<Vec<SelectedFile>>),
     ContextMenu(Option<ContextMenuAction>),
+    PermissionPrompt(AllowOrDeny),
 }
 
 /// Response to file selection request
@@ -171,7 +184,7 @@ pub struct SelectedFile {
     pub type_string: String,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum SimpleDialogRequest {
     Alert {
         id: EmbedderControlId,

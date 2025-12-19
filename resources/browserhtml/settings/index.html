@@ -1,0 +1,178 @@
+<!doctype html>
+<html>
+  <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+  <head>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Settings</title>
+    <link rel="stylesheet" href="//theme.localhost:8888/index.css" />
+    <link rel="stylesheet" href="//shared.localhost:8888/fonts/fonts.css" />
+    <link
+      rel="stylesheet"
+      href="//shared.localhost:8888/third_party/lucide/lucide.css"
+    />
+    <script type="module" src="//shared.localhost:8888/lucide_icon.js"></script>
+    <link rel="icon" href="./logo.png" />
+    <link rel="stylesheet" href="index.css" />
+  </head>
+  <body>
+    <aside class="settings-sidebar">
+      <h1>Settings</h1>
+      <nav class="settings-nav">
+        <a href="#general" class="nav-item active" data-category="general">
+          <lucide-icon name="settings"></lucide-icon>
+          <span>General</span>
+        </a>
+        <a href="#search" class="nav-item" data-category="search">
+          <lucide-icon name="search"></lucide-icon>
+          <span>Search</span>
+        </a>
+        <a href="#theme" class="nav-item" data-category="theme">
+          <lucide-icon name="palette"></lucide-icon>
+          <span>Theme</span>
+        </a>
+        <a href="#keyboard" class="nav-item" data-category="keyboard">
+          <lucide-icon name="keyboard"></lucide-icon>
+          <span>Keyboard</span>
+        </a>
+        <a href="#developer" class="nav-item" data-category="developer">
+          <lucide-icon name="code"></lucide-icon>
+          <span>Developer</span>
+        </a>
+      </nav>
+    </aside>
+    <main class="settings-content">
+      <header class="mobile-header">
+        <div class="back-button" aria-label="Back">
+          <lucide-icon name="arrow-left"></lucide-icon>
+        </div>
+        <h2 class="mobile-title">Settings</h2>
+      </header>
+      <section id="general" class="settings-category">
+        <details open>
+          <summary>
+            <lucide-icon name="settings"></lucide-icon>
+            <span>General</span>
+          </summary>
+          <div class="category-content">
+            <label for="new-view-url" class="category-description">
+              Enter the URL of the new view page
+            </label>
+            <input type="text" id="new-view-url" />
+
+            <label for="homescreen-url" class="category-description">
+              Enter the URL of the homescreen
+            </label>
+            <input type="text" id="homescreen-url" />
+
+            <label for="user-agent" class="category-description">
+              Customize your User-Agent string
+            </label>
+            <input type="text" id="user-agent" />
+          </div>
+        </details>
+      </section>
+      <section id="search" class="settings-category">
+        <details>
+          <summary>
+            <lucide-icon name="search"></lucide-icon>
+            <span>Search</span>
+          </summary>
+          <div class="category-content">
+            <label for="search-engine-list" class="category-description">
+              Choose your search engine
+            </label>
+            <select id="search-engine-list"></select>
+          </div>
+        </details>
+      </section>
+      <section id="theme" class="settings-category">
+        <details>
+          <summary>
+            <lucide-icon name="palette"></lucide-icon>
+            <span>Theme</span>
+          </summary>
+          <div class="category-content">
+            <label for="theme-grid" class="category-description">
+              Choose your visual theme
+            </label>
+            <div id="theme-grid" class="theme-grid"></div>
+          </div>
+        </details>
+      </section>
+      <section id="keyboard" class="settings-category">
+        <details>
+          <summary>
+            <lucide-icon name="keyboard"></lucide-icon>
+            <span>Keyboard</span>
+          </summary>
+          <div class="category-content">
+            <div class="setting-row">
+              <div class="setting-info">
+                <label for="virtual-keyboard-toggle" class="setting-label">
+                  Virtual Keyboard
+                </label>
+                <span class="setting-description">
+                  Use an on-screen keyboard in input fields
+                </span>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="virtual-keyboard-toggle" />
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+          </div>
+        </details>
+      </section>
+      <section id="developer" class="settings-category">
+        <details>
+          <summary>
+            <lucide-icon name="code"></lucide-icon>
+            <span>Developer</span>
+          </summary>
+          <div class="category-content">
+            <div class="setting-row">
+              <div class="setting-info">
+                <label for="mobile-simulation-toggle" class="setting-label">
+                  Mobile Simulation
+                </label>
+                <span class="setting-description">
+                  Force mobile UI mode regardless of screen size (requires reload)
+                </span>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="mobile-simulation-toggle" />
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="setting-row">
+              <div class="setting-info">
+                <label for="devtools-toggle" class="setting-label">
+                  DevTools Server
+                </label>
+                <span class="setting-description">
+                  Enable the remote debugging server (requires restart)
+                </span>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="devtools-toggle" />
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="setting-row">
+              <div class="setting-info">
+                <label for="devtools-port" class="setting-label">
+                  DevTools Port
+                </label>
+                <span class="setting-description">
+                  Port number for the remote debugging server
+                </span>
+              </div>
+              <input type="number" id="devtools-port" min="1" max="65535" class="number-input" />
+            </div>
+          </div>
+        </details>
+      </section>
+    </main>
+    <script type="module" src="index.js"></script>
+  </body>
+</html>

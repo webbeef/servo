@@ -531,6 +531,28 @@ impl ScrollTree {
         result
     }
 
+    /// Try to scroll any scroll node in the tree that can accept the scroll.
+    /// This is used for bubbling scroll events from embedded iframes where we
+    /// don't have a specific target scroll node from hit-testing.
+    pub fn try_scroll_any_node(
+        &mut self,
+        scroll_location: ScrollLocation,
+        context: ScrollType,
+    ) -> Option<(ExternalScrollId, LayoutVector2D)> {
+        // Try each scroll node in order (depth-first from root)
+        for i in 0..self.nodes.len() {
+            let node_id = ScrollTreeNodeId { index: i };
+
+            if let Some(result) =
+                self.scroll_node_or_ancestor_inner(node_id, scroll_location, context)
+            {
+                self.invalidate_cached_transforms();
+                return Some(result);
+            }
+        }
+        None
+    }
+
     /// Given an [`ExternalScrollId`] and an offset, update the scroll offset of the scroll node
     /// with the given id.
     pub fn set_scroll_offset_for_node_with_external_scroll_id(

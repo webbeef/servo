@@ -37,13 +37,14 @@ use style::values::generics::rect::Rect as StyleRect;
 use style::values::specified::text::TextDecorationLine;
 use style_traits::{CSSPixel as StyloCSSPixel, DevicePixel as StyloDevicePixel};
 use webrender_api::units::{
-    DeviceIntSize, DevicePixel, LayoutPixel, LayoutRect, LayoutSideOffsets, LayoutSize,
+    DeviceIntSize, DevicePixel, LayoutPixel, LayoutPoint, LayoutRect, LayoutSideOffsets,
+    LayoutSize, LayoutTransform,
 };
 use webrender_api::{
     self as wr, BorderDetails, BorderRadius, BorderSide, BoxShadowClipMode, BuiltDisplayList,
-    ClipChainId, ClipMode, ColorF, CommonItemProperties, ComplexClipRegion, NinePatchBorder,
-    NinePatchBorderSource, NormalBorder, PrimitiveFlags, PropertyBinding, SpatialId,
-    SpatialTreeItemKey, units,
+    ClipChainId, ClipMode, ColorF, CommonItemProperties, ComplexClipRegion, ExternalScrollId,
+    NinePatchBorder, NinePatchBorderSource, NormalBorder, PrimitiveFlags, PropertyBinding,
+    ReferenceFrameKind, SpatialId, SpatialTreeItemKey, TransformStyle, units,
 };
 use wr::units::LayoutVector2D;
 
@@ -123,6 +124,10 @@ pub(crate) struct DisplayListBuilder<'a> {
 
     /// The collector for calculating Largest Contentful Paint
     lcp_candidate_collector: Option<&'a mut LargestContentfulPaintCandidateCollector>,
+
+    /// For embedded webviews with page zoom, this is the SpatialId of the zoom reference frame.
+    /// When present, this is used as the root spatial ID instead of root_reference_frame.
+    zoom_reference_frame_spatial_id: Option<SpatialId>,
 }
 
 struct InspectorHighlight {
@@ -188,6 +193,36 @@ impl DisplayListBuilder<'_> {
             webrender_display_list_builder.dump_serialized_display_list();
         }
 
+        // For embedded webviews, apply page zoom as a root reference frame transform.
+        // This is done here (inside the display list) rather than externally (in the painter)
+        // because embedded webviews are rendered via push_iframe from their parent's display list.
+        let page_zoom_for_rendering = paint_info.viewport_details.page_zoom_for_rendering;
+        let zoom_reference_frame_spatial_id = if let Some(zoom) = page_zoom_for_rendering {
+            log::warn!(
+                "DisplayListBuilder: applying page_zoom_for_rendering={} for pipeline {:?}",
+                zoom,
+                pipeline_id
+            );
+            let transform = LayoutTransform::scale(zoom, zoom, 1.0);
+            let root_ref_frame = SpatialId::root_reference_frame(pipeline_id);
+            let zoom_spatial_id = webrender_display_list_builder.push_reference_frame(
+                LayoutPoint::zero(),
+                root_ref_frame,
+                TransformStyle::Flat,
+                PropertyBinding::Value(transform),
+                ReferenceFrameKind::Transform {
+                    is_2d_scale_translation: true,
+                    should_snap: true,
+                    paired_with_perspective: false,
+                },
+                // Use a unique key for this zoom reference frame
+                SpatialTreeItemKey::new(0, u64::MAX),
+            );
+            Some(zoom_spatial_id)
+        } else {
+            None
+        };
+
         let _span = profile_traits::trace_span!("DisplayListBuilder::build").entered();
         let mut builder = DisplayListBuilder {
             current_scroll_node_id: paint_info.root_reference_frame_id,
@@ -201,6 +236,7 @@ impl DisplayListBuilder<'_> {
             image_resolver,
             device_pixel_ratio,
             lcp_candidate_collector,
+            zoom_reference_frame_spatial_id,
         };
 
         builder.add_all_spatial_nodes();
@@ -214,15 +250,20 @@ impl DisplayListBuilder<'_> {
         let pipeline_id = builder.paint_info.pipeline_id;
         let viewport_size = builder.paint_info.viewport_details.size;
         let viewport_rect = LayoutRect::from_size(viewport_size.cast_unit());
+        // Use the zoom reference frame if present, otherwise use the built-in root reference frame.
+        // This ensures the viewport hit test is in the same coordinate space as content.
+        let viewport_spatial_id = builder
+            .zoom_reference_frame_spatial_id
+            .unwrap_or_else(|| SpatialId::root_reference_frame(pipeline_id));
         builder.wr().push_hit_test(
             viewport_rect,
             ClipChainId::INVALID,
-            SpatialId::root_reference_frame(pipeline_id),
+            viewport_spatial_id,
             PrimitiveFlags::default(),
             (0, 0), /* tag */
         );
 
-        // Paint the canvas’ background (if any) before/under everything else
+        // Paint the canvas' background (if any) before/under everything else
         stacking_context_tree
             .root_stacking_context
             .build_canvas_background_display_list(&mut builder, fragment_tree);
@@ -230,6 +271,11 @@ impl DisplayListBuilder<'_> {
             .root_stacking_context
             .build_display_list(&mut builder);
         builder.paint_dom_inspector_highlight();
+
+        // Pop the zoom reference frame if we pushed one
+        if page_zoom_for_rendering.is_some() {
+            webrender_display_list_builder.pop_reference_frame();
+        }
 
         webrender_display_list_builder.end().1
     }
@@ -268,11 +314,41 @@ impl DisplayListBuilder<'_> {
         let mut scroll_tree = std::mem::take(&mut self.paint_info.scroll_tree);
         let mut mapping = Vec::with_capacity(scroll_tree.nodes.len());
 
-        mapping.push(SpatialId::root_reference_frame(self.pipeline_id()));
-        mapping.push(SpatialId::root_scroll_node(self.pipeline_id()));
-
         let pipeline_id = self.pipeline_id();
         let pipeline_tag = ((pipeline_id.0 as u64) << 32) | pipeline_id.1 as u64;
+
+        // If we have a zoom reference frame (for embedded webviews with page zoom),
+        // use it as the root spatial ID and define our own scroll frame as its child.
+        // Otherwise use the built-in root_reference_frame and root_scroll_node.
+        // This ensures all content is rendered as a descendant of the zoom transform.
+        if let Some(zoom_spatial_id) = self.zoom_reference_frame_spatial_id {
+            mapping.push(zoom_spatial_id);
+
+            // Define a scroll frame as a child of the zoom reference frame.
+            // This replaces the built-in root_scroll_node which is not a child of our zoom frame.
+            let viewport_size = self.paint_info.viewport_details.size;
+            let clip_rect = LayoutRect::from_size(viewport_size.cast_unit());
+            // Use the same rect for content - actual scroll limits are managed by the scroll tree
+            let content_rect = clip_rect;
+
+            spatial_tree_count += 1;
+            let spatial_tree_item_key = SpatialTreeItemKey::new(pipeline_tag, spatial_tree_count);
+
+            let root_scroll_spatial_id = self.wr().define_scroll_frame(
+                zoom_spatial_id,
+                ExternalScrollId(0, pipeline_id.into()),
+                content_rect,
+                clip_rect,
+                LayoutVector2D::zero(), /* external_scroll_offset */
+                0,                      /* scroll_offset_generation */
+                wr::HasScrollLinkedEffect::No,
+                spatial_tree_item_key,
+            );
+            mapping.push(root_scroll_spatial_id);
+        } else {
+            mapping.push(SpatialId::root_reference_frame(pipeline_id));
+            mapping.push(SpatialId::root_scroll_node(pipeline_id));
+        }
 
         for node in scroll_tree.nodes.iter().skip(2) {
             let parent_scroll_node_id = node

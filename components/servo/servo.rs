@@ -63,7 +63,7 @@ use rustc_hash::FxHashMap;
 use script::{JSEngineSetup, ServiceWorkerManager};
 use servo_config::opts::Opts;
 use servo_config::prefs::{PrefValue, Preferences};
-use servo_config::{opts, pref, prefs};
+use servo_config::{embedder_prefs, opts, pref, prefs};
 use servo_geometry::{
     DeviceIndependentIntRect, convert_rect_to_css_pixel, convert_size_to_css_pixel,
 };
@@ -204,9 +204,7 @@ impl ServoInner {
         }
 
         if self.constellation_proxy.disconnected() {
-            self.delegate
-                .borrow()
-                .notify_error(ServoError::LostConnectionWithBackend);
+            self.raise_error(ServoError::LostConnectionWithBackend);
         }
 
         self.paint.borrow_mut().perform_updates();
@@ -258,8 +256,37 @@ impl ServoInner {
 
     fn handle_delegate_errors(&self) {
         while let Some(error) = self.servo_errors.try_recv() {
-            self.delegate.borrow().notify_error(error);
+            self.raise_error(error);
         }
+    }
+
+    /// Notify the delegate about an error and also broadcast to all script threads
+    /// so they can dispatch `servoerror` events to `navigator.embedder` instances.
+    fn raise_error(&self, error: ServoError) {
+        // Convert to ServoErrorType and message for script threads
+        let (error_type, message) = match &error {
+            ServoError::LostConnectionWithBackend => (
+                ServoErrorType::LostConnectionWithBackend,
+                "Lost connection with the web engine backend".to_owned(),
+            ),
+            ServoError::DevtoolsFailedToStart => (
+                ServoErrorType::DevtoolsFailedToStart,
+                "The devtools server failed to start".to_owned(),
+            ),
+            ServoError::ResponseFailedToSend(e) => (
+                ServoErrorType::ResponseFailedToSend,
+                format!("Failed to send response: {:?}", e),
+            ),
+        };
+
+        // Broadcast to all script threads via constellation
+        self.constellation_proxy
+            .send(EmbedderToConstellationMessage::NotifyServoError(
+                error_type, message,
+            ));
+
+        // Notify the delegate
+        self.delegate.borrow().notify_error(error);
     }
 
     fn clean_up_destroyed_webview_handles(&self) {
@@ -419,6 +446,11 @@ impl ServoInner {
                     webview.request_create_new(response_sender);
                 }
             },
+            EmbedderMsg::AllowOpeningEmbeddedWebView(webview_id, response_sender) => {
+                if let Some(webview) = self.get_webview_handle(webview_id) {
+                    webview.request_create_embedded(response_sender);
+                }
+            },
             EmbedderMsg::WebViewClosed(webview_id) => {
                 if let Some(webview) = self.get_webview_handle(webview_id) {
                     webview.delegate().notify_closed(webview);
@@ -564,10 +596,7 @@ impl ServoInner {
                     .delegate
                     .borrow()
                     .notify_devtools_server_started(port, token),
-                Err(()) => self
-                    .delegate
-                    .borrow()
-                    .notify_error(ServoError::DevtoolsFailedToStart),
+                Err(()) => self.raise_error(ServoError::DevtoolsFailedToStart),
             },
             EmbedderMsg::RequestDevtoolsConnection(response_sender) => {
                 self.delegate
@@ -686,6 +715,47 @@ impl ServoInner {
                         .delegate()
                         .notify_accessibility_tree_update(webview, tree_update);
                 }
+            },
+            EmbedderMsg::EmbeddedWebViewCreated(
+                parent_webview_id,
+                new_webview_id,
+                new_browsing_context_id,
+                new_pipeline_id,
+                url,
+            ) => {
+                if let Some(webview) = self.get_webview_handle(parent_webview_id) {
+                    webview.delegate().notify_embedded_webview_created(
+                        webview,
+                        new_webview_id,
+                        new_browsing_context_id,
+                        new_pipeline_id,
+                        url.into_url(),
+                    );
+                }
+            },
+            EmbedderMsg::OpenNewOSWindow(params) => {
+                self.delegate
+                    .borrow()
+                    .request_open_new_os_window(params.url.into_url(), &params.features);
+            },
+            EmbedderMsg::CloseCurrentOSWindow => {
+                self.delegate.borrow().request_close_current_os_window()
+            },
+            EmbedderMsg::ExitApplication => self.delegate.borrow().request_exit_application(),
+            EmbedderMsg::StartWindowDrag(webview_id) => {
+                self.delegate.borrow().request_start_window_drag(webview_id)
+            },
+            EmbedderMsg::StartWindowResize(webview_id) => self
+                .delegate
+                .borrow()
+                .request_start_window_resize(webview_id),
+            EmbedderMsg::EmbedderPreferenceChanged(name, value) => {
+                // This message is sent from the constellation when a namespaced (embedder)
+                // preference is changed from a content process. We invoke the registered
+                // setter callback here in the main process to persist the preference.
+                // This ensures that only the embedder process writes to the prefs file,
+                // avoiding sandbox issues and race conditions.
+                embedder_prefs::set_embedder_pref_from_script(&name, value);
             },
         }
     }
@@ -923,6 +993,14 @@ impl Servo {
 
     pub fn site_data_manager<'a>(&'a self) -> Ref<'a, SiteDataManager> {
         self.0.site_data_manager.borrow()
+    }
+
+    pub fn spawn_task<F>(task: F)
+    where
+        F: Future + 'static + std::marker::Send,
+        F::Output: Send + 'static,
+    {
+        net::async_runtime::spawn_task(task)
     }
 
     pub(crate) fn paint<'a>(&'a self) -> Ref<'a, Paint> {

@@ -7,6 +7,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use constellation_traits::{EmbeddedWebViewEventType, ScriptToConstellationMessage};
 use dom_struct::dom_struct;
 use embedder_traits::{
     EmbedderMsg, Notification as EmbedderNotification,
@@ -270,11 +271,21 @@ impl Notification {
         if !shown {
             // TODO: step 6.1: Append notification to the list of notifications.
             // step 6.2: Display notification on the device
-            self.global()
-                .send_to_embedder(EmbedderMsg::ShowNotification(
-                    self.global().webview_id(),
-                    self.to_embedder_notification(),
-                ));
+            let notification = self.to_embedder_notification();
+            if self.global().is_embedded_webview() {
+                // For embedded webviews, route through constellation to parent iframe
+                self.global().send_to_constellation(
+                    ScriptToConstellationMessage::EmbeddedWebViewNotification(
+                        EmbeddedWebViewEventType::NotificationShow(notification),
+                    ),
+                );
+            } else {
+                self.global()
+                    .send_to_embedder(EmbedderMsg::ShowNotification(
+                        self.global().webview_id(),
+                        notification,
+                    ));
+            }
         }
 
         // TODO: step 7: If shown is false or oldNotification is non-null,
@@ -853,6 +864,11 @@ impl Notification {
 
         for (request, resource_type) in pending_requests {
             self.fetch_and_show_when_ready(request, resource_type);
+        }
+
+        // If there are no resources to fetch, show the notification immediately
+        if self.pending_request_ids.borrow().is_empty() {
+            self.show();
         }
     }
 

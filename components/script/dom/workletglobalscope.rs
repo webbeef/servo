@@ -120,8 +120,10 @@ impl WorkletGlobalScope {
                 #[cfg(feature = "webgpu")]
                 init.gpu_id_hub.clone(),
                 inherited_secure_context,
-                false,
-                None, // font_context
+                false, // unminify_js
+                false, // is_embedded_webview - worklets are never embedded webviews
+                false, // hide_focus - worklets don't have focus
+                None,  // font_context
             ),
             base_url,
             to_script_thread_sender: init.to_script_thread_sender.clone(),

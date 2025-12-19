@@ -112,3 +112,7 @@ pub trait WindowHelpers {
         object: MutableHandleObject,
     );
 }
+
+pub trait EmbedderHelpers {
+    fn is_allowed_to_embed(cx: JSContext, global: HandleObject) -> bool;
+}

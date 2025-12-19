@@ -10,12 +10,15 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use base::generic_channel::GenericCallback;
-use constellation_traits::{KeyboardScroll, ScriptToConstellationMessage};
+use base::id::WebViewId;
+use constellation_traits::{
+    EmbeddedWebViewEventType, KeyboardScroll, ScriptToConstellationMessage,
+};
 use embedder_traits::{
     Cursor, EditingActionEvent, EmbedderMsg, ImeEvent, InputEvent, InputEventAndId,
     InputEventResult, KeyboardEvent as EmbedderKeyboardEvent, MouseButton, MouseButtonAction,
     MouseButtonEvent, MouseLeftViewportEvent, ScrollEvent, TouchEvent as EmbedderTouchEvent,
-    TouchEventType, TouchId, UntrustedNodeAddress, WheelEvent as EmbedderWheelEvent,
+    TouchEventType, TouchId, UntrustedNodeAddress, WebViewPoint, WheelEvent as EmbedderWheelEvent,
 };
 #[cfg(feature = "gamepad")]
 use embedder_traits::{
@@ -27,8 +30,10 @@ use keyboard_types::{Code, Key, KeyState, Modifiers, NamedKey};
 use layout_api::{ScrollContainerQueryFlags, node_id_from_scroll_id};
 use script_bindings::codegen::GenericBindings::DocumentBinding::DocumentMethods;
 use script_bindings::codegen::GenericBindings::EventBinding::EventMethods;
+#[cfg(feature = "gamepad")]
 use script_bindings::codegen::GenericBindings::NavigatorBinding::NavigatorMethods;
 use script_bindings::codegen::GenericBindings::NodeBinding::NodeMethods;
+#[cfg(feature = "gamepad")]
 use script_bindings::codegen::GenericBindings::PerformanceBinding::PerformanceMethods;
 use script_bindings::codegen::GenericBindings::TouchBinding::TouchMethods;
 use script_bindings::codegen::GenericBindings::WindowBinding::{ScrollBehavior, WindowMethods};
@@ -47,12 +52,13 @@ use crate::dom::bindings::cell::DomRefCell;
 use crate::dom::bindings::refcounted::Trusted;
 use crate::dom::bindings::root::MutNullableDom;
 use crate::dom::clipboardevent::ClipboardEventType;
-use crate::dom::document::{FireMouseEventType, FocusInitiator};
+use crate::dom::document::{Document, FireMouseEventType, FocusInitiator};
 use crate::dom::event::{EventBubbles, EventCancelable, EventComposed, EventFlags};
 #[cfg(feature = "gamepad")]
 use crate::dom::gamepad::gamepad::{Gamepad, contains_user_gesture};
 #[cfg(feature = "gamepad")]
 use crate::dom::gamepad::gamepadevent::GamepadEventType;
+use crate::dom::html::htmliframeelement::HTMLIFrameElement;
 use crate::dom::inputevent::HitTestResult;
 use crate::dom::node::{self, Node, NodeTraits, ShadowIncluding};
 use crate::dom::pointerevent::PointerId;
@@ -64,6 +70,7 @@ use crate::dom::types::{
 };
 use crate::drag_data_store::{DragDataStore, Kind, Mode};
 use crate::realms::enter_realm;
+use crate::timers::OneshotTimerHandle;
 
 /// A data structure used for tracking the current click count. This can be
 /// reset to 0 if a mouse button event happens at a sufficient distance or time
@@ -127,6 +134,56 @@ impl ClickCountingInfo {
     }
 }
 
+/// Long-press duration threshold for context menu
+const LONG_PRESS_DURATION_MS: u64 = 400;
+/// Maximum movement allowed during long-press detection (square of the value)
+const LONG_PRESS_MOVE_THRESHOLD: f32 = 50.0;
+
+/// State for tracking an active long-press gesture for context menu.
+#[derive(JSTraceable, MallocSizeOf)]
+struct LongPressState {
+    /// Timer handle for the long-press callback.
+    timer: OneshotTimerHandle,
+    /// Touch ID being tracked.
+    #[no_trace]
+    #[ignore_malloc_size_of = "TouchId is from embedder_traits"]
+    touch_id: TouchId,
+    /// Start point of the touch.
+    #[no_trace]
+    #[ignore_malloc_size_of = "Point2D is from euclid"]
+    start_point: Point2D<f32, CSSPixel>,
+}
+
+/// Callback structure for the long-press context menu timer.
+#[derive(JSTraceable, MallocSizeOf)]
+pub(crate) struct LongPressContextMenuCallback {
+    #[ignore_malloc_size_of = "Document pointers are handled elsewhere"]
+    pub(crate) document: Trusted<Document>,
+    #[no_trace]
+    #[ignore_malloc_size_of = "TouchId is from embedder_traits"]
+    pub(crate) touch_id: TouchId,
+    #[no_trace]
+    #[ignore_malloc_size_of = "Point2D is from euclid"]
+    pub(crate) point: Point2D<f32, CSSPixel>,
+}
+
+impl LongPressContextMenuCallback {
+    pub(crate) fn invoke(self, can_gc: CanGc) {
+        let document = self.document.root();
+        document
+            .event_handler()
+            .handle_long_press_context_menu(self.touch_id, self.point, can_gc);
+    }
+}
+
+/// Source of a context menu trigger, used to set appropriate PointerEvent values.
+enum ContextMenuSource<'a> {
+    /// Context menu triggered by mouse (right-click).
+    Mouse(&'a ConstellationInputEvent),
+    /// Context menu triggered by touch (long-press).
+    Touch(TouchId),
+}
+
 /// The [`DocumentEventHandler`] is a structure responsible for handling input events for
 /// the [`crate::Document`] and storing data related to event handling. It exists to
 /// decrease the size of the [`crate::Document`] structure.
@@ -161,6 +218,20 @@ pub(crate) struct DocumentEventHandler {
     /// The active keyboard modifiers for the WebView. This is updated when receiving any input event.
     #[no_trace]
     active_keyboard_modifiers: Cell<Modifiers>,
+    /// Long-press state for context menu detection.
+    long_press_state: DomRefCell<Option<LongPressState>>,
+    /// Touch ID that triggered a context menu via long-press.
+    /// When this touch ends, we should return DefaultPrevented to prevent click synthesis.
+    #[no_trace]
+    #[ignore_malloc_size_of = "TouchId is from embedder_traits"]
+    context_menu_touch_id: Cell<Option<TouchId>>,
+    /// Touches that have been forwarded to embedded webviews.
+    /// Maps TouchId to the embedded WebViewId so subsequent events for the same
+    /// touch can be forwarded to the same webview even if hit testing returns
+    /// something different.
+    #[no_trace]
+    #[ignore_malloc_size_of = "TouchId and WebViewId are from embedder_traits"]
+    forwarded_touches: DomRefCell<Vec<(TouchId, WebViewId)>>,
 }
 
 impl DocumentEventHandler {
@@ -177,6 +248,9 @@ impl DocumentEventHandler {
             current_cursor: Default::default(),
             active_touch_points: Default::default(),
             active_keyboard_modifiers: Default::default(),
+            long_press_state: Default::default(),
+            context_menu_touch_id: Default::default(),
+            forwarded_touches: Default::default(),
         }
     }
 
@@ -421,6 +495,198 @@ impl DocumentEventHandler {
         }
     }
 
+    /// Check if the hit test result landed on an embedded iframe, and if so, forward
+    /// the input event to the embedded webview. Returns `true` if the event was forwarded
+    /// (and should not be processed locally), `false` otherwise.
+    fn forward_event_to_embedded_iframe_if_needed(
+        &self,
+        hit_test_result: &HitTestResult,
+        input_event: &ConstellationInputEvent,
+    ) -> bool {
+        // Walk up from the hit node to find if any ancestor is an embedded iframe
+        // We use ShadowIncluding::Yes because embedded iframes may be inside shadow DOM
+        // (e.g., inside a custom element like <web-view>)
+        let Some(embedded_iframe) = hit_test_result
+            .node
+            .inclusive_ancestors(ShadowIncluding::Yes)
+            .find_map(|ancestor| {
+                let iframe = DomRoot::downcast::<HTMLIFrameElement>(ancestor)?;
+                if iframe.is_embedded_webview() {
+                    Some(iframe)
+                } else {
+                    None
+                }
+            })
+        else {
+            return false;
+        };
+
+        // Get the embedded webview ID
+        let Some(embedded_webview_id) = embedded_iframe.embedded_webview_id() else {
+            return false;
+        };
+
+        // Get the iframe's border box to transform coordinates from parent to embedded viewport.
+        // The border box origin is in document coordinates (relative to initial containing block).
+        let Some(iframe_border_box) = embedded_iframe.upcast::<Node>().border_box() else {
+            return false;
+        };
+
+        // Convert iframe position from document coords to viewport coords by subtracting scroll offset.
+        let scroll_offset = self.window.scroll_offset();
+        let iframe_viewport_x = iframe_border_box.origin.x.to_f32_px() - scroll_offset.x as f32;
+        let iframe_viewport_y = iframe_border_box.origin.y.to_f32_px() - scroll_offset.y as f32;
+
+        // Get device pixel ratio for converting between CSS and device pixels
+        let device_pixel_ratio = self.window.device_pixel_ratio().get();
+
+        // Helper to transform a WebViewPoint by subtracting iframe's viewport position.
+        // Device points need the offset scaled by device_pixel_ratio.
+        // Page (CSS) points use the offset directly.
+        let transform_point = |point: WebViewPoint| -> WebViewPoint {
+            match point {
+                WebViewPoint::Device(p) => {
+                    // Device pixels: scale the CSS offset by device pixel ratio
+                    let offset_x = iframe_viewport_x * device_pixel_ratio;
+                    let offset_y = iframe_viewport_y * device_pixel_ratio;
+                    WebViewPoint::Device(Point2D::new(p.x - offset_x, p.y - offset_y))
+                },
+                WebViewPoint::Page(p) => {
+                    // CSS pixels: use offset directly
+                    WebViewPoint::Page(Point2D::new(
+                        p.x - iframe_viewport_x,
+                        p.y - iframe_viewport_y,
+                    ))
+                },
+            }
+        };
+
+        // Transform the input event to have coordinates relative to the embedded webview
+        let transformed_event = match input_event.event.event.clone() {
+            InputEvent::MouseMove(mut mouse_move) => {
+                mouse_move.point = transform_point(mouse_move.point);
+                InputEvent::MouseMove(mouse_move)
+            },
+            InputEvent::MouseButton(mut mouse_button) => {
+                mouse_button.point = transform_point(mouse_button.point);
+                InputEvent::MouseButton(mouse_button)
+            },
+            InputEvent::Touch(mut touch) => {
+                touch.point = transform_point(touch.point);
+                InputEvent::Touch(touch)
+            },
+            InputEvent::Wheel(mut wheel) => {
+                wheel.point = transform_point(wheel.point);
+                InputEvent::Wheel(wheel)
+            },
+            // For events without coordinates, just pass them through
+            other => other,
+        };
+
+        // Create the event with ID to forward to the embedded webview
+        let event_with_id = InputEventAndId::from(transformed_event);
+
+        // Forward the event to the embedded webview via the Constellation
+        self.window.send_to_constellation(
+            ScriptToConstellationMessage::ForwardEventToEmbeddedWebView(
+                embedded_webview_id,
+                event_with_id,
+            ),
+        );
+
+        // Track forwarded touches so subsequent events for the same touch go to the same webview.
+        // This is important because the hit test might return a different result for touchmove/touchend.
+        if let InputEvent::Touch(touch) = &input_event.event.event {
+            if touch.event_type == TouchEventType::Down {
+                self.forwarded_touches
+                    .borrow_mut()
+                    .push((touch.id, embedded_webview_id));
+            }
+        }
+
+        // Notify the parent iframe element that input was received by the embedded webview,
+        // but only for "activation" events (mousedown/touchstart), not for moves or other events.
+        // This allows the parent document to track which embedded webview is "active".
+        let is_activation_event = match &input_event.event.event {
+            InputEvent::MouseButton(mouse_button) => mouse_button.action == MouseButtonAction::Down,
+            InputEvent::Touch(touch) => touch.event_type == TouchEventType::Down,
+            _ => false,
+        };
+        if is_activation_event {
+            embedded_iframe.dispatch_embedded_webview_event(
+                EmbeddedWebViewEventType::InputReceived,
+                CanGc::note(),
+            );
+        }
+
+        true
+    }
+
+    /// Forward a touch event to a specific embedded webview. This is used for subsequent
+    /// touch events (move, end, cancel) after the initial touchstart was forwarded.
+    fn forward_touch_event_to_webview(
+        &self,
+        webview_id: WebViewId,
+        event: &EmbedderTouchEvent,
+        _input_event: &ConstellationInputEvent,
+    ) {
+        // We need to find the iframe for this webview to get coordinate transformation info.
+        // Search for the iframe with the matching embedded webview ID.
+        let document = self.window.Document();
+        let Some(embedded_iframe) = document
+            .iframes()
+            .iter()
+            .find(|iframe| iframe.embedded_webview_id() == Some(webview_id))
+        else {
+            warn!(
+                "Could not find iframe for embedded webview {:?}",
+                webview_id
+            );
+            return;
+        };
+
+        // Get the iframe's border box for coordinate transformation
+        let Some(iframe_border_box) = embedded_iframe.upcast::<Node>().border_box() else {
+            return;
+        };
+
+        // Convert iframe position from document coords to viewport coords
+        let scroll_offset = self.window.scroll_offset();
+        let iframe_viewport_x = iframe_border_box.origin.x.to_f32_px() - scroll_offset.x as f32;
+        let iframe_viewport_y = iframe_border_box.origin.y.to_f32_px() - scroll_offset.y as f32;
+
+        // Get device pixel ratio for coordinate conversion
+        let device_pixel_ratio = self.window.device_pixel_ratio().get();
+
+        // Transform the touch point
+        let transformed_point = match event.point {
+            WebViewPoint::Device(p) => {
+                let offset_x = iframe_viewport_x * device_pixel_ratio;
+                let offset_y = iframe_viewport_y * device_pixel_ratio;
+                WebViewPoint::Device(Point2D::new(p.x - offset_x, p.y - offset_y))
+            },
+            WebViewPoint::Page(p) => WebViewPoint::Page(Point2D::new(
+                p.x - iframe_viewport_x,
+                p.y - iframe_viewport_y,
+            )),
+        };
+
+        // Create transformed touch event
+        let mut transformed_touch =
+            EmbedderTouchEvent::new(event.event_type, event.id, transformed_point);
+
+        // Preserve the cancelable state from the original event
+        if !event.is_cancelable() {
+            transformed_touch.disable_cancelable();
+        }
+
+        // Forward to the embedded webview
+        let event_with_id = InputEventAndId::from(InputEvent::Touch(transformed_touch));
+        self.window.send_to_constellation(
+            ScriptToConstellationMessage::ForwardEventToEmbeddedWebView(webview_id, event_with_id),
+        );
+    }
+
     /// <https://w3c.github.io/uievents/#handle-native-mouse-move>
     fn handle_native_mouse_move_event(&self, input_event: &ConstellationInputEvent, can_gc: CanGc) {
         // Ignore all incoming events without a hit test.
@@ -432,6 +698,57 @@ impl DocumentEventHandler {
             .most_recent_mousemove_point
             .replace(Some(hit_test_result.point_in_frame));
         if old_mouse_move_point == Some(hit_test_result.point_in_frame) {
+            return;
+        }
+
+        // Check if the hit target is an embedded iframe. If so, forward the event
+        // to the embedded webview and don't process it locally.
+        if self.forward_event_to_embedded_iframe_if_needed(&hit_test_result, input_event) {
+            // Before returning, we need to update the hover state in the parent document.
+            // The mouse is now over the embedded iframe, so we should clear hover from
+            // any previous target and fire mouseout/mouseleave events.
+            if let Some(old_target) = self.current_hover_target.get() {
+                // Clear hover state on the old target and its ancestors
+                for element in old_target
+                    .upcast::<Node>()
+                    .inclusive_ancestors(ShadowIncluding::No)
+                    .filter_map(DomRoot::downcast::<Element>)
+                {
+                    element.set_hover_state(false);
+                    element.set_active_state(false);
+                }
+
+                // Fire mouseout event on the old target
+                MouseEvent::new_for_platform_motion_event(
+                    &self.window,
+                    FireMouseEventType::Out,
+                    &hit_test_result,
+                    input_event,
+                    can_gc,
+                )
+                .upcast::<Event>()
+                .fire(old_target.upcast(), can_gc);
+
+                // Fire mouseleave events up the ancestor chain
+                self.handle_mouse_enter_leave_event(
+                    DomRoot::from_ref(old_target.upcast::<Node>()),
+                    None, // No new target in the parent document
+                    FireMouseEventType::Leave,
+                    &hit_test_result,
+                    input_event,
+                    can_gc,
+                );
+
+                // Clear the hover target since mouse is now in embedded iframe
+                self.current_hover_target.set(None);
+            }
+
+            // Release the parent's cursor claim by sending Default to the embedder.
+            // This ensures the embedded iframe's cursor takes effect even if
+            // the embedded's cursor hasn't changed (which would cause set_cursor
+            // to short-circuit and not send a message).
+            self.set_cursor(None);
+
             return;
         }
 
@@ -615,6 +932,12 @@ impl DocumentEventHandler {
             return;
         };
 
+        // Check if the hit target is an embedded iframe. If so, forward the event
+        // to the embedded webview and don't process it locally.
+        if self.forward_event_to_embedded_iframe_if_needed(&hit_test_result, input_event) {
+            return;
+        }
+
         debug!(
             "{:?}: at {:?}",
             event.action, hit_test_result.point_in_frame
@@ -685,18 +1008,25 @@ impl DocumentEventHandler {
                 let target_el = element.find_focusable_shadow_host_if_necessary();
 
                 let document = self.window.Document();
-                document.begin_focus_transaction();
 
-                // Try to focus `el`. If it's not focusable, focus the document instead.
-                document.request_focus(None, FocusInitiator::Local, can_gc);
-                document.request_focus(target_el.as_deref(), FocusInitiator::Local, can_gc);
+                // Skip focus handling for hidefocus webviews - no blur/focus events
+                // should be fired and focus should not be transferred.
+                let hide_focus = self.window.as_global_scope().hide_focus();
+
+                if !hide_focus {
+                    document.begin_focus_transaction();
+
+                    // Try to focus `el`. If it's not focusable, focus the document instead.
+                    document.request_focus(None, FocusInitiator::Local, can_gc);
+                    document.request_focus(target_el.as_deref(), FocusInitiator::Local, can_gc);
+                }
 
                 // Step 7. Let result = dispatch event at target
                 let result = dom_event.dispatch(node.upcast(), false, can_gc);
 
                 // Step 8. If result is true and target is a focusable area
                 // that is click focusable, then Run the focusing steps at target.
-                if result && document.has_focus_transaction() {
+                if !hide_focus && result && document.has_focus_transaction() {
                     document.commit_focus_transaction(FocusInitiator::Local, can_gc);
                 }
 
@@ -706,7 +1036,7 @@ impl DocumentEventHandler {
                     self.maybe_show_context_menu(
                         node.upcast(),
                         &hit_test_result,
-                        input_event,
+                        ContextMenuSource::Mouse(input_event),
                         can_gc,
                     );
                 }
@@ -817,9 +1147,30 @@ impl DocumentEventHandler {
         &self,
         target: &EventTarget,
         hit_test_result: &HitTestResult,
-        input_event: &ConstellationInputEvent,
+        source: ContextMenuSource,
         can_gc: CanGc,
     ) {
+        // Get pointer-specific values based on the source
+        let (button, pressed_buttons, pointer_id, pointer_type, modifiers) = match source {
+            ContextMenuSource::Mouse(input_event) => (
+                2i16, // right mouse button
+                input_event.pressed_mouse_buttons,
+                PointerId::Mouse as i32,
+                DOMString::from("mouse"),
+                input_event.active_keyboard_modifiers,
+            ),
+            ContextMenuSource::Touch(touch_id) => {
+                let TouchId(id) = touch_id;
+                (
+                    0i16, // no mouse button for touch
+                    0,    // no pressed mouse buttons
+                    id,   // use touch identifier as pointer_id
+                    DOMString::from("touch"),
+                    Modifiers::empty(),
+                )
+            },
+        };
+
         // <https://w3c.github.io/uievents/#contextmenu>
         let menu_event = PointerEvent::new(
             &self.window,                   // window
@@ -833,25 +1184,25 @@ impl DocumentEventHandler {
             hit_test_result
                 .point_relative_to_initial_containing_block
                 .to_i32(),
-            input_event.active_keyboard_modifiers,
-            2i16, // button, right mouse button
-            input_event.pressed_mouse_buttons,
-            None,                     // related_target
-            None,                     // point_in_target
-            PointerId::Mouse as i32,  // pointer_id
-            1,                        // width
-            1,                        // height
-            0.5,                      // pressure
-            0.0,                      // tangential_pressure
-            0,                        // tilt_x
-            0,                        // tilt_y
-            0,                        // twist
-            PI / 2.0,                 // altitude_angle
-            0.0,                      // azimuth_angle
-            DOMString::from("mouse"), // pointer_type
-            true,                     // is_primary
-            vec![],                   // coalesced_events
-            vec![],                   // predicted_events
+            modifiers,
+            button,
+            pressed_buttons,
+            None, // related_target
+            None, // point_in_target
+            pointer_id,
+            1,        // width
+            1,        // height
+            0.5,      // pressure
+            0.0,      // tangential_pressure
+            0,        // tilt_x
+            0,        // tilt_y
+            0,        // twist
+            PI / 2.0, // altitude_angle
+            0.0,      // azimuth_angle
+            pointer_type,
+            true,   // is_primary
+            vec![], // coalesced_events
+            vec![], // predicted_events
             can_gc,
         );
 
@@ -867,17 +1218,133 @@ impl DocumentEventHandler {
         };
     }
 
+    /// Start the long-press timer for context menu detection.
+    fn start_long_press_timer(&self, touch_id: TouchId, point: Point2D<f32, CSSPixel>) {
+        // Cancel any existing timer first
+        self.cancel_long_press_timer();
+
+        // Schedule the callback
+        let callback = crate::timers::OneshotTimerCallback::LongPressContextMenu(
+            LongPressContextMenuCallback {
+                document: Trusted::new(&*self.window.Document()),
+                touch_id,
+                point,
+            },
+        );
+
+        let handle = self
+            .window
+            .as_global_scope()
+            .schedule_callback(callback, Duration::from_millis(LONG_PRESS_DURATION_MS));
+
+        // Store the long-press state
+        *self.long_press_state.borrow_mut() = Some(LongPressState {
+            timer: handle,
+            touch_id,
+            start_point: point,
+        });
+    }
+
+    /// Cancel the long-press timer if one is active.
+    fn cancel_long_press_timer(&self) {
+        if let Some(state) = self.long_press_state.borrow_mut().take() {
+            self.window
+                .as_global_scope()
+                .unschedule_callback(state.timer);
+        }
+    }
+
+    /// Handle the long-press context menu timer callback.
+    pub(crate) fn handle_long_press_context_menu(
+        &self,
+        touch_id: TouchId,
+        point: Point2D<f32, CSSPixel>,
+        can_gc: CanGc,
+    ) {
+        // Only trigger if this touch is still the one we're tracking
+        let is_tracked = self
+            .long_press_state
+            .borrow()
+            .as_ref()
+            .is_some_and(|state| state.touch_id == touch_id);
+
+        if !is_tracked {
+            return;
+        }
+
+        // Clear the long-press state
+        *self.long_press_state.borrow_mut() = None;
+
+        // Track this touch so we can prevent click on touchend
+        self.context_menu_touch_id.set(Some(touch_id));
+
+        // Hit test at the touch point
+        let Some(hit_test_result) = self.window.hit_test_from_point_in_viewport(point) else {
+            return;
+        };
+
+        // Find the target element
+        let Some(el) = hit_test_result
+            .node
+            .inclusive_ancestors(ShadowIncluding::Yes)
+            .find_map(DomRoot::downcast::<Element>)
+        else {
+            return;
+        };
+
+        // Fire the contextmenu PointerEvent with touch-specific values.
+        self.maybe_show_context_menu(
+            el.upcast(),
+            &hit_test_result,
+            ContextMenuSource::Touch(touch_id),
+            can_gc,
+        );
+    }
+
     fn handle_touch_event(
         &self,
         event: EmbedderTouchEvent,
         input_event: &ConstellationInputEvent,
         can_gc: CanGc,
     ) -> InputEventResult {
+        // Check if this touch was previously forwarded to an embedded webview.
+        // If so, continue forwarding to the same webview regardless of current hit test.
+        // This ensures touch sequences stay with their original target.
+        {
+            let mut forwarded = self.forwarded_touches.borrow_mut();
+            if let Some(pos) = forwarded.iter().position(|(id, _)| *id == event.id) {
+                let (_, webview_id) = forwarded[pos];
+
+                // Forward this event to the same webview
+                self.forward_touch_event_to_webview(webview_id, &event, input_event);
+
+                // Remove tracking on touchend/touchcancel
+                if matches!(
+                    event.event_type,
+                    TouchEventType::Up | TouchEventType::Cancel
+                ) {
+                    forwarded.swap_remove(pos);
+                }
+
+                return InputEventResult::DefaultPrevented;
+            }
+        }
+
         // Ignore all incoming events without a hit test.
         let Some(hit_test_result) = self.window.hit_test_from_input_event(input_event) else {
             self.update_active_touch_points_when_early_return(event);
             return Default::default();
         };
+
+        // Check if the hit target is an embedded iframe. If so, forward the event
+        // to the embedded webview and don't process it locally.
+        if self.forward_event_to_embedded_iframe_if_needed(&hit_test_result, input_event) {
+            self.update_active_touch_points_when_early_return(event);
+            // Return DefaultPrevented so the parent's compositor doesn't synthesize
+            // a click for this touch sequence. The embedded webview's compositor will
+            // handle click synthesis for the forwarded touch events.
+            return InputEventResult::DefaultPrevented;
+        }
 
         let TouchId(identifier) = event.id;
         let event_name = match event.event_type {
@@ -918,8 +1385,31 @@ impl DocumentEventHandler {
                 self.active_touch_points
                     .borrow_mut()
                     .push(Dom::from_ref(&*touch));
+
+                // Start the long-press timer for context menu detection
+                self.start_long_press_timer(event.id, hit_test_result.point_in_frame);
             },
             TouchEventType::Move => {
+                // Check if this is the tracked touch and if moved too far
+                let should_cancel = self
+                    .long_press_state
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|state| {
+                        if state.touch_id == event.id {
+                            let dx = hit_test_result.point_in_frame.x - state.start_point.x;
+                            let dy = hit_test_result.point_in_frame.y - state.start_point.y;
+                            let distance = dx * dx + dy * dy;
+                            distance > LONG_PRESS_MOVE_THRESHOLD
+                        } else {
+                            false
+                        }
+                    });
+
+                if should_cancel {
+                    self.cancel_long_press_timer();
+                }
+
                 // Replace an existing touch point
                 let mut active_touch_points = self.active_touch_points.borrow_mut();
                 match active_touch_points
@@ -931,6 +1421,17 @@ impl DocumentEventHandler {
                 }
             },
             TouchEventType::Up | TouchEventType::Cancel => {
+                // Cancel the long-press timer if this is the tracked touch
+                let should_cancel = self
+                    .long_press_state
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|state| state.touch_id == event.id);
+
+                if should_cancel {
+                    self.cancel_long_press_timer();
+                }
+
                 // Remove an existing touch point
                 let mut active_touch_points = self.active_touch_points.borrow_mut();
                 match active_touch_points
@@ -973,6 +1474,19 @@ impl DocumentEventHandler {
 
         let event = touch_event.upcast::<Event>();
         event.fire(&target, can_gc);
+
+        // If this touch triggered a context menu via long-press, prevent click synthesis
+        if let InputEvent::Touch(ref touch_ev) = input_event.event.event {
+            if matches!(
+                touch_ev.event_type,
+                TouchEventType::Up | TouchEventType::Cancel
+            ) && self.context_menu_touch_id.get() == Some(touch_ev.id)
+            {
+                self.context_menu_touch_id.set(None);
+                return InputEventResult::DefaultPrevented;
+            }
+        }
+
         event.flags().into()
     }
 
@@ -1157,6 +1671,16 @@ impl DocumentEventHandler {
         let Some(hit_test_result) = self.window.hit_test_from_input_event(input_event) else {
             return Default::default();
         };
+
+        // Check if the hit target is an embedded iframe. If so, forward the event
+        // to the embedded webview and don't process it locally.
+        if self.forward_event_to_embedded_iframe_if_needed(&hit_test_result, input_event) {
+            // Return DefaultPrevented to stop the parent from scrolling.
+            // The embedded webview will handle the scroll independently.
+            // TODO: Implement proper scroll chaining where scroll bubbles back to parent
+            // when embedded iframe reaches its scroll limit.
+            return InputEventResult::DefaultPrevented;
+        }
 
         let Some(el) = hit_test_result
             .node

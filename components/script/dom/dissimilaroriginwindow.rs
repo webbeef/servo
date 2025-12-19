@@ -66,7 +66,9 @@ impl DissimilarOriginWindow {
                 #[cfg(feature = "webgpu")]
                 global_to_clone_from.wgpu_id_hub(),
                 Some(global_to_clone_from.is_secure_context()),
-                false,
+                false, // unminify_js
+                false, // is_embedded_webview - dissimilar origin windows are never embedded webviews
+                false, // hide_focus - dissimilar origin windows don't have focus
                 global_to_clone_from.font_context().cloned(),
             ),
             window_proxy: Dom::from_ref(window_proxy),

@@ -28,7 +28,7 @@ mod webview_delegate;
 // should be exported at the root. See <https://github.com/servo/servo/issues/18475>.
 pub use accesskit;
 pub use base::generic_channel::GenericSender;
-pub use base::id::WebViewId;
+pub use base::id::{BrowsingContextId, PipelineId, WebViewId};
 pub use embedder_traits::user_contents::UserScript;
 pub use embedder_traits::*;
 pub use image::RgbaImage;
@@ -48,9 +48,12 @@ pub use paint_api::rendering_context::{
 // This should be replaced with an API on ServoBuilder.
 // See <https://github.com/servo/servo/issues/40950>.
 pub use resources;
+pub use servo_config::embedder_prefs::PrefsPersistError;
 pub use servo_config::opts::{DiagnosticsLogging, Opts, OutputOptions};
 pub use servo_config::prefs::{PrefValue, Preferences, UserAgentPlatform};
-pub use servo_config::{opts, pref, prefs};
+pub use servo_config::{
+    EmbedderPreferences, define_embedder_prefs, embedder_prefs, opts, pref, prefs,
+};
 pub use servo_geometry::{
     DeviceIndependentIntRect, DeviceIndependentPixel, convert_rect_to_css_pixel,
 };

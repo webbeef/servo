@@ -21,8 +21,8 @@ use base::id::{
 use bluetooth_traits::BluetoothRequest;
 use canvas_traits::webgl::WebGLPipeline;
 use constellation_traits::{
-    KeyboardScroll, LoadData, NavigationHistoryBehavior, ScriptToConstellationSender,
-    StructuredSerializedData, WindowSizeType,
+    EmbeddedWebViewEventType, KeyboardScroll, LoadData, NavigationHistoryBehavior,
+    ScriptToConstellationSender, StructuredSerializedData, WindowSizeType,
 };
 use crossbeam_channel::RecvTimeoutError;
 use devtools_traits::ScriptToDevtoolsControlMsg;
@@ -30,7 +30,7 @@ use embedder_traits::user_contents::{UserContentManagerId, UserContents};
 use embedder_traits::{
     EmbedderControlId, EmbedderControlResponse, FocusSequenceNumber, InputEventAndId,
     JavaScriptEvaluationId, MediaSessionActionType, PaintHitTestResult, ScriptToEmbedderChan,
-    Theme, ViewportDetails, WebDriverScriptCommand,
+    ServoErrorType, Theme, ViewportDetails, WebDriverScriptCommand,
 };
 use euclid::{Scale, Size2D};
 use fonts_traits::SystemFontServiceProxySender;
@@ -78,6 +78,14 @@ pub struct NewPipelineInfo {
     pub user_content_manager_id: Option<UserContentManagerId>,
     /// The [`Theme`] of the new layout.
     pub theme: Theme,
+    /// Whether this pipeline is for an embedded webview (created via `<iframe embed>`).
+    /// Embedded webviews have `parent_info` set for rendering hierarchy, but their
+    /// WindowProxy should have no parent (so `window.parent === window.self`).
+    pub is_embedded_webview: bool,
+    /// Whether this embedded webview should never receive focus (hidefocus attribute).
+    /// When true, focus-related events are processed but focus is not transferred to
+    /// elements in this document.
+    pub hide_focus: bool,
 }
 
 /// When a pipeline is closed, should its browsing context be discarded too?
@@ -309,6 +317,19 @@ pub enum ScriptThreadMessage {
     /// Update the pinch zoom details of a pipeline. Each `Window` stores a `VisualViewport` DOM
     /// instance that gets updated according to the changes from the `Compositor``.
     UpdatePinchZoomInfos(PipelineId, PinchZoomInfos),
+    /// Dispatch an event on an embedded webview's iframe element.
+    /// This is sent from the constellation when it receives an `EmbeddedWebViewNotification`
+    /// from an embedded webview's script thread.
+    DispatchEmbeddedWebViewEvent {
+        /// The browsing context ID of the iframe element containing the embedded webview.
+        target: BrowsingContextId,
+        /// The pipeline ID of the parent document containing the iframe.
+        parent: PipelineId,
+        /// The event type to dispatch.
+        event: EmbeddedWebViewEventType,
+    },
+    /// Dispatch a `servoerror` event to all `navigator.embedder` instances in this script thread.
+    DispatchServoError(ServoErrorType, String),
 }
 
 impl fmt::Debug for ScriptThreadMessage {

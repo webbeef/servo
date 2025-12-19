@@ -2,6 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+#[cfg(feature = "gamepad")]
 use std::cell::Cell;
 use std::convert::TryInto;
 use std::ops::Deref;
@@ -23,6 +24,7 @@ use servo_config::pref;
 use servo_url::ServoUrl;
 
 use crate::body::Extractable;
+#[cfg(feature = "gamepad")]
 use crate::dom::bindings::cell::DomRefCell;
 use crate::dom::bindings::codegen::Bindings::NavigatorBinding::NavigatorMethods;
 use crate::dom::bindings::codegen::Bindings::WindowBinding::Window_Binding::WindowMethods;
@@ -38,12 +40,14 @@ use crate::dom::bluetooth::Bluetooth;
 use crate::dom::clipboard::Clipboard;
 use crate::dom::credentialmanagement::credentialscontainer::CredentialsContainer;
 use crate::dom::csp::{GlobalCspReporting, Violation};
+use crate::dom::embedder::Embedder;
 #[cfg(feature = "gamepad")]
 use crate::dom::gamepad::Gamepad;
 #[cfg(feature = "gamepad")]
 use crate::dom::gamepad::gamepadevent::GamepadEventType;
 use crate::dom::geolocation::Geolocation;
 use crate::dom::globalscope::GlobalScope;
+use crate::dom::keyboard::Keyboard;
 use crate::dom::mediadevices::MediaDevices;
 use crate::dom::mediasession::MediaSession;
 use crate::dom::mimetypearray::MimeTypeArray;
@@ -128,6 +132,8 @@ pub(crate) struct Navigator {
     #[cfg(feature = "gamepad")]
     has_gamepad_gesture: Cell<bool>,
     servo_internals: MutNullableDom<ServoInternals>,
+    embedder: MutNullableDom<Embedder>,
+    keyboard: MutNullableDom<Keyboard>,
 }
 
 impl Navigator {
@@ -153,6 +159,8 @@ impl Navigator {
             #[cfg(feature = "gamepad")]
             has_gamepad_gesture: Cell::new(false),
             servo_internals: Default::default(),
+            embedder: Default::default(),
+            keyboard: Default::default(),
         }
     }
 
@@ -163,6 +171,11 @@ impl Navigator {
     #[cfg(feature = "webxr")]
     pub(crate) fn xr(&self) -> Option<DomRoot<XRSystem>> {
         self.xr.get()
+    }
+
+    /// Returns the Embedder if it has been created, without creating a new one.
+    pub(crate) fn get_embedder(&self) -> Option<DomRoot<Embedder>> {
+        self.embedder.get()
     }
 
     #[cfg(feature = "gamepad")]
@@ -549,6 +562,18 @@ impl NavigatorMethods<crate::DomTypeHolder> for Navigator {
     fn Servo(&self) -> DomRoot<ServoInternals> {
         self.servo_internals
             .or_init(|| ServoInternals::new(&self.global(), CanGc::note()))
+    }
+
+    /// <https://servo.org/internal-no-spec>
+    fn Embedder(&self) -> DomRoot<Embedder> {
+        self.embedder
+            .or_init(|| Embedder::new(&self.global(), CanGc::note()))
+    }
+
+    /// <https://servo.org/internal-no-spec>
+    fn Keyboard(&self) -> DomRoot<Keyboard> {
+        self.keyboard
+            .or_init(|| Keyboard::new(&self.global(), CanGc::note()))
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-navigator-registerprotocolhandler>

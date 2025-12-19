@@ -18,8 +18,9 @@ use content_security_policy::sandboxing_directive::SandboxingFlagSet;
 use devtools_traits::{DevtoolScriptControlMsg, ScriptToDevtoolsControlMsg, WorkerId};
 use embedder_traits::user_contents::UserContentManagerId;
 use embedder_traits::{
-    AnimationState, FocusSequenceNumber, JSValue, JavaScriptEvaluationError,
-    JavaScriptEvaluationId, MediaSessionEvent, ScriptToEmbedderChan, Theme, ViewportDetails,
+    AnimationState, EmbedderControlId, EmbedderControlResponse, FocusSequenceNumber,
+    InputEventAndId, JSValue, JavaScriptEvaluationError, JavaScriptEvaluationId, MediaSessionEvent,
+    ScriptToEmbedderChan, Theme, ViewportDetails,
 };
 use encoding_rs::Encoding;
 use euclid::default::Size2D as UntypedSize2D;
@@ -35,6 +36,7 @@ use profile_traits::mem::MemoryReportResult;
 use profile_traits::{mem, time as profile_time};
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
+use servo_config::pref_util::PrefValue;
 use servo_url::{ImmutableOrigin, OriginSnapshot, ServoUrl};
 use storage_traits::StorageThreads;
 use storage_traits::webstorage_thread::WebStorageType;
@@ -44,7 +46,8 @@ use webgpu_traits::{WebGPU, WebGPUAdapterResponse};
 
 use crate::structured_data::{BroadcastChannelMsg, StructuredSerializedData};
 use crate::{
-    LogEntry, MessagePortMsg, PortMessageTask, PortTransferInfo, TraversalDirection, WindowSizeType,
+    EmbeddedWebViewEventType, LogEntry, MessagePortMsg, PortMessageTask, PortTransferInfo,
+    TraversalDirection, WindowSizeType,
 };
 
 pub type ScriptToConstellationSender =
@@ -407,16 +410,51 @@ pub struct AuxiliaryWebViewCreationRequest {
     pub opener_webview_id: WebViewId,
     /// The pipeline opener browsing context.
     pub opener_pipeline_id: PipelineId,
-    /// Sender for the constellation’s response to our request.
-    pub response_sender: IpcSender<Option<AuxiliaryWebViewCreationResponse>>,
+    /// Sender for the constellation's response to our request.
+    pub response_sender: GenericSender<Option<AuxiliaryWebViewCreationResponse>>,
+    /// The target URL that window.open() was called with.
+    /// This is needed because load_data.url is always about:blank for new browsing contexts.
+    pub target_url: Option<ServoUrl>,
 }
 
-/// Constellation’s response to auxiliary browsing context creation requests.
+/// Constellation's response to auxiliary browsing context creation requests.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct AuxiliaryWebViewCreationResponse {
     /// The new webview ID.
     pub new_webview_id: WebViewId,
     /// The new pipeline ID.
+    pub new_pipeline_id: PipelineId,
+    /// The [`UserContentManagerId`] for this new auxiliary browsing context.
+    pub user_content_manager_id: Option<UserContentManagerId>,
+}
+
+/// Request to create an embedded webview in an iframe with the "embed" attribute.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct EmbeddedWebViewCreationRequest {
+    /// Load data containing the url to load
+    pub load_data: LoadData,
+    /// The pipeline ID of the parent document containing the iframe.
+    pub parent_pipeline_id: PipelineId,
+    /// The webview ID of the parent document.
+    pub parent_webview_id: WebViewId,
+    /// The initial viewport size for this embedded webview.
+    pub viewport_details: ViewportDetails,
+    /// The [`Theme`] to use within this embedded webview.
+    pub theme: Theme,
+    /// Whether this embedded webview should never receive focus (hidefocus attribute).
+    pub hide_focus: bool,
+    /// Sender for the constellation's response to our request.
+    pub response_sender: IpcSender<Option<EmbeddedWebViewCreationResponse>>,
+}
+
+/// Constellation's response to embedded webview creation requests.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct EmbeddedWebViewCreationResponse {
+    /// The new webview ID for the embedded webview.
+    pub new_webview_id: WebViewId,
+    /// The new browsing context ID for the embedded webview.
+    pub new_browsing_context_id: BrowsingContextId,
+    /// The new pipeline ID for the embedded webview's initial document.
     pub new_pipeline_id: PipelineId,
     /// The [`UserContentManagerId`] for this new auxiliary browsing context.
     pub user_content_manager_id: Option<UserContentManagerId>,
@@ -585,6 +623,10 @@ pub enum ScriptToConstellationMessage {
     NewBroadcastChannelNameInRouter(BroadcastChannelRouterId, String, ImmutableOrigin),
     /// A global stopped managing broadcast channels for a given channel-name.
     RemoveBroadcastChannelNameInRouter(BroadcastChannelRouterId, String, ImmutableOrigin),
+    /// Register this script thread as having an embedder error listener.
+    RegisterEmbedderErrorListener(ScriptEventLoopId),
+    /// Unregister this script thread from embedder error listeners.
+    UnregisterEmbedderErrorListener(ScriptEventLoopId),
     /// Broadcast a message to all same-origin broadcast channels,
     /// excluding the source of the broadcast.
     ScheduleBroadcast(BroadcastChannelRouterId, BroadcastChannelMsg),
@@ -597,6 +639,9 @@ pub enum ScriptToConstellationMessage {
         Option<String>,
         Option<String>,
     ),
+    /// Broadcast a preference change to all script threads.
+    /// Used when preferences are changed from JavaScript via `navigator.servo`.
+    BroadcastPreferenceChange(String, PrefValue),
     /// Indicates whether this pipeline is currently running animations.
     ChangeRunningAnimationsState(AnimationState),
     /// Requests that a new 2D canvas thread be created. (This is done in the constellation because
@@ -677,6 +722,10 @@ pub enum ScriptToConstellationMessage {
     ScriptNewIFrame(IFrameLoadInfoWithData),
     /// Script has opened a new auxiliary browsing context.
     CreateAuxiliaryWebView(AuxiliaryWebViewCreationRequest),
+    /// Script has created an embedded webview in an iframe with the "embed" attribute.
+    CreateEmbeddedWebView(EmbeddedWebViewCreationRequest),
+    /// An embedded WebView was removed from a DOM tree.
+    RemoveEmbeddedWebView(WebViewId),
     /// Mark a new document as active
     ActivateDocument,
     /// Set the document state for a pipeline (used by screenshot / reftests)
@@ -724,6 +773,44 @@ pub enum ScriptToConstellationMessage {
     ForwardKeyboardScroll(PipelineId, KeyboardScroll),
     /// Notify the Constellation of the screenshot readiness of a given pipeline.
     RespondToScreenshotReadinessRequest(ScreenshotReadinessResponse),
+    /// Notification from an embedded webview to be forwarded to its parent iframe element.
+    /// The Constellation will forward this to the parent pipeline's script thread.
+    EmbeddedWebViewNotification(EmbeddedWebViewEventType),
+    /// Load a URL in an embedded webview (only valid for embedded webview pipelines).
+    EmbeddedWebViewLoad(WebViewId, ServoUrl),
+    /// Reload an embedded webview (only valid for embedded webview pipelines).
+    EmbeddedWebViewReload(WebViewId),
+    /// Traverse history in an embedded webview (only valid for embedded webview pipelines).
+    /// The TraversalId is used to track completion of the traversal.
+    EmbeddedWebViewTraverseHistory(WebViewId, TraversalDirection, embedder_traits::TraversalId),
+    /// Take a screenshot of an embedded webview, encoding it to the specified format.
+    EmbeddedWebViewTakeScreenshot(
+        WebViewId,
+        embedder_traits::EmbeddedWebViewScreenshotRequest,
+        GenericCallback<
+            Result<
+                embedder_traits::EmbeddedWebViewScreenshotResult,
+                embedder_traits::EmbeddedWebViewScreenshotError,
+            >,
+        >,
+    ),
+    /// Forward an input event to an embedded webview after the parent's DOM hit testing
+    /// determined that the event target is an embedded iframe element.
+    ForwardEventToEmbeddedWebView(WebViewId, InputEventAndId),
+    /// Inject an input event to the webview that currently has an active IME input.
+    /// Used by the virtual keyboard to send keystrokes to the focused input field.
+    InjectInputToActiveIme(InputEventAndId),
+    /// Set the active IME webview for virtual keyboard input routing.
+    /// Used when the system webview (non-embedded) shows an input method control.
+    SetActiveImeWebView(WebViewId),
+    /// Clear the active IME webview when the system webview hides an input method control.
+    ClearActiveImeWebView(WebViewId),
+    /// Response from parent iframe to an embedded webview's control request.
+    /// The parent shell sends this after the user interacts with a custom control UI
+    /// (e.g., select dropdown, color picker, file dialog).
+    EmbeddedWebViewControlResponse(EmbedderControlId, EmbedderControlResponse),
+    /// Set page zoom for an embedded webview.
+    EmbeddedWebViewSetPageZoom(WebViewId, f32),
 }
 
 impl fmt::Debug for ScriptToConstellationMessage {

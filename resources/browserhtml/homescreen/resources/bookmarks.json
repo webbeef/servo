@@ -1,0 +1,18 @@
+[
+  { "title": "Servo", "url": "https://servo.org", "icon": "servo.png" },
+  {
+    "title": "Store.app",
+    "url": "https://store.app/featured/web",
+    "icon": "store_app.png"
+  },
+  {
+    "title": "Wikipedia",
+    "url": "https://wikipedia.org",
+    "icon": "wikipedia.png"
+  },
+  {
+    "title": "Rewild the Internet",
+    "url": "https://www.noemamag.com/we-need-to-rewild-the-internet/",
+    "icon": "noemamag.png"
+  }
+]

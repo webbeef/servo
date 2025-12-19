@@ -259,6 +259,20 @@ impl PipelineId {
     pub fn root_scroll_id(&self) -> webrender_api::ExternalScrollId {
         ExternalScrollId(0, self.into())
     }
+
+    pub fn from_string(str: &str) -> Option<PipelineId> {
+        let re = Regex::new(r"^Pipeline\((\d+),(\d+)\)$").ok()?;
+        let caps = re.captures(str)?;
+        let namespace_id = caps.get(1)?.as_str().parse::<u32>().ok()?;
+        let index = caps.get(2)?.as_str().parse::<u32>().ok()?;
+
+        let result = PipelineId {
+            namespace_id: PipelineNamespaceId(namespace_id),
+            index: Index::new(index).ok()?,
+        };
+        assert_eq!(result.to_string(), str.to_string());
+        Some(result)
+    }
 }
 
 impl From<WebRenderPipelineId> for PipelineId {
@@ -344,6 +358,24 @@ impl WebViewId {
 
     pub fn mock_for_testing(browsing_context_id: BrowsingContextId) -> WebViewId {
         WebViewId(TEST_PAINTER_ID, browsing_context_id)
+    }
+
+    /// Parse a WebViewId from its string representation.
+    /// Format: "PainterId: {id}, TopLevel({namespace},{index})"
+    pub fn from_string(str: &str) -> Option<WebViewId> {
+        let re = Regex::new(r"^PainterId: (\d+), TopLevelBrowsingContext\((\d+),(\d+)\)$").ok()?;
+        let caps = re.captures(str)?;
+        let painter_id = caps.get(1)?.as_str().parse::<u32>().ok()?;
+        let namespace_id = caps.get(2)?.as_str().parse::<u32>().ok()?;
+        let index = caps.get(3)?.as_str().parse::<u32>().ok()?;
+
+        let browsing_context_id = BrowsingContextId {
+            namespace_id: PipelineNamespaceId(namespace_id),
+            index: Index::new(index).ok()?,
+        };
+        let result = WebViewId(PainterId(painter_id), browsing_context_id);
+        assert_eq!(result.to_string(), str.to_string());
+        Some(result)
     }
 }
 

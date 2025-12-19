@@ -523,6 +523,7 @@ impl ReplacedContents {
                         viewport_details: ViewportDetails {
                             size,
                             hidpi_scale_factor: Scale::new(hidpi_scale_factor.0),
+                            page_zoom_for_rendering: None,
                         },
                     },
                 );

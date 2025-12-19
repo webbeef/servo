@@ -1,0 +1,15 @@
+/* https://fonts.google.com/specimen/Pacifico */
+@font-face {
+  font-family: "Pacifico";
+  font-style: normal;
+  font-weight: 400;
+  src: url(./Pacifico-Regular.ttf) format("truetype");
+}
+
+/* https://fonts.google.com/specimen/Readex+Pro */
+@font-face {
+  font-family: "ReadexPro";
+  font-style: normal;
+  font-weight: 400;
+  src: url(./ReadexPro.ttf) format("truetype");
+}

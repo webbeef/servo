@@ -1,0 +1,72 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+
+:root {
+  /* ===== Typography ===== */
+  --font-family-base: ReadexPro;
+  --font-weight-normal: normal;
+  --font-weight-bold: bold;
+  --font-size-menu: 0.9em;
+  --font-size-sm: 0.85em;
+  --font-size-xs: 0.75em;
+
+  /* ===== Backgrounds ===== */
+  --bg-main: #232323;
+  --bg-header: #3a3a3a;
+  --bg-footer: #1a1a1a;
+  --bg-webview: #000000;
+  --bg-menu: #2a2a2a;
+  --bg-surface: #2a2a2a;
+  --bg-hover: rgba(0, 255, 0, 0.1);
+  --bg-icon: rgba(0, 255, 0, 0.15);
+
+  /* ===== Colors - Text ===== */
+  --color-text-menu: #00ff00;
+  --color-text: #00ff00;
+  --color-text-secondary: #00cc00;
+  --color-text-tertiary: #009900;
+  --color-text-on-header: #000000;
+
+  /* ===== Colors - Interactive ===== */
+  --color-focus-ring: rgba(255, 165, 0, 0.7);
+  --color-resize-handle-hover: rgba(255, 165, 0, 0.4);
+  --color-primary: #ff8800;
+  --color-danger: #ff4444;
+
+  --color-menu-item-hover: rgba(0, 255, 0, 0.15);
+
+  /* ===== Colors - Borders ===== */
+  --color-border: rgba(0, 255, 0, 0.3);
+
+  /* ===== Colors - Shadow ===== */
+  --color-shadow: rgba(0, 0, 0, 0.6);
+  --color-shadow-menu: rgba(0, 0, 0, 0.7);
+  --color-backdrop: rgba(0, 0, 0, 0.8);
+
+  /* ===== Border Radius ===== */
+  /* Sharp, industrial corners */
+  --radius-sm: 0.2em;
+  --radius-md: 0.3em;
+  --radius-lg: 0.4em;
+
+  /* ===== Spacing ===== */
+  --spacing-xs: 0.25em;
+  --spacing-sm: 0.5em;
+  --spacing-md: 1em;
+  --spacing-lg: 1.5em;
+
+  /* ===== Sizes ===== */
+  --size-header-height: 2em;
+  --size-footer-height: 1.5em;
+  --size-icon: 1em;
+  --size-icon-sm: 1.25em;
+  --size-menu-width: 155px;
+  --size-panel-width: 320px;
+  --size-logo: 3em;
+  --size-notification-icon: 2em;
+
+  /* ===== Transitions ===== */
+  --transition-fast: 0.1s ease;
+
+  /* ===== Opacity ===== */
+  --opacity-muted: 0.6;
+}

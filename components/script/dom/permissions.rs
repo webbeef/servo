@@ -312,6 +312,7 @@ pub(crate) fn descriptor_permission_state(
         if pref!(dom_permissions_testing_allowed_in_nonsecure_contexts) {
             return PermissionState::Granted;
         }
+        println!("Not a secure context, denying permission for {:?}", feature);
         return PermissionState::Denied;
     }
 
@@ -324,6 +325,10 @@ pub(crate) fn descriptor_permission_state(
     //   2. If document is not allowed to use feature, return "denied".
     if let Some(window) = global_scope.downcast::<Window>() {
         if !window.Document().allowed_to_use_feature(feature) {
+            println!(
+                "Document not allowed to use feature {:?}, denying permission",
+                feature
+            );
             return PermissionState::Denied;
         }
     }
@@ -354,11 +359,23 @@ fn prompt_user_from_embedder(name: PermissionName, global_scope: &GlobalScope) -
         return PermissionState::Denied;
     };
     let (sender, receiver) = generic_channel::channel().expect("Failed to create IPC channel!");
-    global_scope.send_to_embedder(EmbedderMsg::PromptPermission(
-        webview_id,
-        name.convert(),
-        sender,
-    ));
+
+    // For embedded webviews, use the embedder controls pattern to route through the parent
+    if global_scope.is_embedded_webview() {
+        if let Some(window) = global_scope.downcast::<Window>() {
+            window
+                .Document()
+                .embedder_controls()
+                .show_permission_prompt(name.convert(), sender);
+        }
+    } else {
+        // For top-level webviews, send directly to embedder
+        global_scope.send_to_embedder(EmbedderMsg::PromptPermission(
+            webview_id,
+            name.convert(),
+            sender,
+        ));
+    }
 
     match receiver.recv() {
         Ok(AllowOrDeny::Allow) => PermissionState::Granted,

@@ -1,0 +1,46 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+
+/* Shared menu styles used by webview-menu, context-menu and system-menu */
+
+.menu {
+  background: var(--bg-menu);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 4px 12px var(--color-shadow-menu);
+  min-width: var(--size-menu-width);
+  overflow: hidden;
+  font-family: var(--font-family-base);
+  font-size: var(--font-size-menu);
+}
+
+.menu-item {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-md);
+  padding: var(--spacing-sm) 0.75em;
+  cursor: pointer;
+  color: var(--color-text-menu);
+  white-space: nowrap;
+}
+
+.menu-separator {
+  height: 1px;
+  background: var(--color-border);
+  margin: var(--spacing-xs);
+}
+
+.menu-item:hover {
+  background: var(--color-menu-item-hover);
+}
+
+.backdrop {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: transparent;
+}
+
+:host([open]) {
+  display: block;
+}

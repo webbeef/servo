@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html>
+  <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+  <head>
+    <title>Rewild Your Web</title>
+    <link rel="stylesheet" href="//theme.localhost:8888/index.css" />
+    <link rel="stylesheet" href="//shared.localhost:8888/fonts/fonts.css" />
+    <link rel="stylesheet" href="//shared.localhost:8888/third_party/lucide/lucide.css" />
+    <link rel="stylesheet" href="new_view.css" />
+    <link rel="icon" href="//system.localhost:8888/logo.png" />
+    <script src="third_party/fend/fend_wasm.js"></script>
+    <script type="module" src="//shared.localhost:8888/lucide_icon.js"></script>
+    <script type="module" src="//shared.localhost:8888/theme.js"></script>
+    <script type="module" src="new_view.js"></script>
+  </head>
+  <body>
+    <div class="container" id="container">
+      <div class="search-block">
+        <h1>Rewild Your Web</h1>
+        <div class="search-header">
+          <img src="logo.png" alt="Browser.HTML" class="logo" />
+          <input
+            type="text"
+            class="search-input"
+            id="search-input"
+            placeholder="Search or enter URL…"
+            autofocus
+          />
+        </div>
+        <div class="results-container" id="results-container">
+          <ul class="results-list" id="results-list"></ul>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>

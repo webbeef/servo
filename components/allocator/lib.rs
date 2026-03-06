@@ -73,7 +73,16 @@ mod platform {
 
     /// Memory allocation APIs compatible with libc
     pub mod libc_compat {
-        pub use tikv_jemalloc_sys::{free, malloc, realloc};
+        pub use tikv_jemalloc_sys::{calloc, free, malloc, realloc};
+    }
+
+    pub unsafe fn memalign(alignment: usize, size: usize) -> *mut c_void {
+        let mut ptr: *mut c_void = std::ptr::null_mut();
+        if unsafe { tikv_jemalloc_sys::posix_memalign(&mut ptr, alignment, size) } == 0 {
+            ptr
+        } else {
+            std::ptr::null_mut()
+        }
     }
 }
 
@@ -109,7 +118,16 @@ mod platform {
     }
 
     pub mod libc_compat {
-        pub use libc::{free, malloc, realloc};
+        pub use libc::{calloc, free, malloc, realloc};
+    }
+
+    pub unsafe fn memalign(alignment: usize, size: usize) -> *mut c_void {
+        let mut ptr: *mut c_void = std::ptr::null_mut();
+        if unsafe { libc::posix_memalign(&mut ptr, alignment, size) } == 0 {
+            ptr
+        } else {
+            std::ptr::null_mut()
+        }
     }
 }
 
@@ -139,5 +157,55 @@ mod platform {
             crate::ALLOC.note_allocation(ptr, size);
             size
         }
+    }
+
+    pub mod libc_compat {
+        pub use libc::{calloc, free, malloc, realloc};
+    }
+
+    pub unsafe fn memalign(alignment: usize, size: usize) -> *mut c_void {
+        unsafe { libc::aligned_malloc(size, alignment) }
+    }
+}
+
+/// Bridge symbols for SpiderMonkey — route SM C++ allocations through
+/// the same allocator that Servo uses for Rust allocations.
+///
+/// These symbols are declared `extern "C"` in mozjs-sys's
+/// `mozjs_sys_alloc.h` and referenced throughout SpiderMonkey's
+/// allocation paths.  The mozjs-sys `custom-allocator` feature
+/// suppresses its default (libc) implementations so that these
+/// definitions are used instead.
+mod mozjs_bridge {
+    use std::os::raw::c_void;
+
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn mozjs_sys_malloc(size: usize) -> *mut c_void {
+        unsafe { crate::libc_compat::malloc(size) }
+    }
+
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn mozjs_sys_calloc(n: usize, size: usize) -> *mut c_void {
+        unsafe { crate::libc_compat::calloc(n, size) }
+    }
+
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn mozjs_sys_realloc(p: *mut c_void, size: usize) -> *mut c_void {
+        unsafe { crate::libc_compat::realloc(p, size) }
+    }
+
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn mozjs_sys_free(p: *mut c_void) {
+        unsafe { crate::libc_compat::free(p) }
+    }
+
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn mozjs_sys_memalign(alignment: usize, size: usize) -> *mut c_void {
+        unsafe { crate::memalign(alignment, size) }
+    }
+
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn mozjs_sys_malloc_usable_size(p: *const c_void) -> usize {
+        unsafe { crate::usable_size(p) }
     }
 }

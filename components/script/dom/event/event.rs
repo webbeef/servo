@@ -17,6 +17,7 @@ use script_bindings::codegen::GenericBindings::PointerEventBinding::PointerEvent
 use script_bindings::match_domstring_ascii;
 use script_bindings::reflector::{Reflector, reflect_dom_object_with_proto_and_cx};
 use servo_base::cross_process_instant::CrossProcessInstant;
+use smallvec::SmallVec;
 use stylo_atoms::Atom;
 
 use crate::dom::bindings::callback::ExceptionHandling;
@@ -35,6 +36,7 @@ use crate::dom::bindings::refcounted::Trusted;
 use crate::dom::bindings::reflector::DomGlobal;
 use crate::dom::bindings::root::{Dom, DomRoot, MutNullableDom};
 use crate::dom::bindings::str::DOMString;
+use crate::dom::document::Document;
 use crate::dom::element::Element;
 use crate::dom::eventtarget::{EventListeners, EventTarget, ListenerPhase};
 use crate::dom::globalscope::GlobalScope;
@@ -47,6 +49,11 @@ use crate::dom::shadowroot::ShadowRoot;
 use crate::dom::types::{KeyboardEvent, PointerEvent, UserActivation};
 use crate::dom::window::Window;
 use crate::task::TaskOnce;
+
+/// Number of [event path](https://dom.spec.whatwg.org/#event-path) segments stored
+/// inline before spilling to the heap. Most event paths (the target plus its ancestors
+/// up to the window) fit within this, so the common case dispatches without allocating.
+const EVENT_PATH_INLINE_CAPACITY: usize = 8;
 
 /// <https://dom.spec.whatwg.org/#concept-event>
 #[dom_struct]
@@ -83,7 +90,8 @@ pub(crate) struct Event {
     time_stamp: CrossProcessInstant,
 
     /// <https://dom.spec.whatwg.org/#event-path>
-    path: DomRefCell<Vec<EventPathSegment>>,
+    #[custom_trace]
+    path: DomRefCell<SmallVec<[EventPathSegment; EVENT_PATH_INLINE_CAPACITY]>>,
 
     /// <https://dom.spec.whatwg.org/#event-relatedtarget>
     related_target: MutNullableDom<EventTarget>,
@@ -336,10 +344,14 @@ impl Event {
         // Step 3. Let activationTarget be null.
         let mut activation_target = None;
 
+        // event's relatedTarget is not mutated while the path is being constructed (no
+        // script runs before the invoke phase), so root it once here instead of re-rooting
+        // it on every ancestor step below.
+        let event_related_target = self.related_target.get();
+
         // Step 4. Let relatedTarget be the result of retargeting event’s relatedTarget against target.
-        let related_target = self
-            .related_target
-            .get()
+        let related_target = event_related_target
+            .as_ref()
             .map(|related_target| related_target.retarget(&target));
 
         // Step 5. Let clearTargets be false.
@@ -348,7 +360,7 @@ impl Event {
         // Step 6. If target is not relatedTarget or target is event’s relatedTarget:
         let mut pre_activation_result: Option<InputActivationState> = None;
         if related_target.as_ref() != Some(&target) ||
-            self.related_target.get().as_ref() == Some(&target)
+            event_related_target.as_ref() == Some(&target)
         {
             // Step 6.1. Let touchTargets be a new list.
             // TODO
@@ -398,6 +410,16 @@ impl Event {
             let mut parent_or_none = target.get_the_parent(self);
             let mut done = false;
 
+            // `target`'s root node, used by the Step 6.9.6 ancestor test below. It only
+            // changes when `target` is reassigned (Step 6.9.8.1), so compute it once here
+            // and again there via this closure, rather than on every iteration.
+            let target_root_of = |target: &EventTarget| {
+                target
+                    .downcast::<Node>()
+                    .map(|node| node.GetRootNode(&GetRootNodeOptions::empty()))
+            };
+            let mut target_root = target_root_of(&target);
+
             // Step 6.9. While parent is non-null:
             while let Some(parent) = parent_or_none.clone() {
                 // Step 6.9.1. If slottable is non-null:
@@ -430,9 +452,8 @@ impl Event {
                 }
 
                 // Step 6.9.3. Let relatedTarget be the result of retargeting event’s relatedTarget against parent.
-                let related_target = self
-                    .related_target
-                    .get()
+                let related_target = event_related_target
+                    .as_ref()
                     .map(|related_target| related_target.retarget(&parent));
 
                 // Step 6.9.4. Let touchTargets be a new list.
@@ -444,14 +465,20 @@ impl Event {
 
                 // Step 6.9.6. If parent is a Window object, or parent is a node and target’s root is a
                 // shadow-including inclusive ancestor of parent:
-                let root_is_shadow_inclusive_ancestor = parent
-                    .downcast::<Node>()
-                    .zip(target.downcast::<Node>())
-                    .is_some_and(|(parent, target)| {
-                        target
-                            .GetRootNode(&GetRootNodeOptions::empty())
-                            .is_shadow_including_inclusive_ancestor_of(parent)
-                    });
+                let root_is_shadow_inclusive_ancestor =
+                    match (parent.downcast::<Node>(), target_root.as_ref()) {
+                        (Some(parent_node), Some(root)) => {
+                            // Fast path: when `target` is a connected node outside any shadow
+                            // tree, its root is the Document. Every node reached by walking up
+                            // from `target` shares that document, so the Document is always a
+                            // shadow-including inclusive ancestor of `parent`. This avoids an
+                            // O(depth) ancestor walk here, which otherwise makes building the
+                            // path O(depth^2).
+                            root.is::<Document>() ||
+                                root.is_shadow_including_inclusive_ancestor_of(parent_node)
+                        },
+                        _ => false,
+                    };
                 if parent.is::<Window>() || root_is_shadow_inclusive_ancestor {
                     // Step 6.9.6.1. If isActivationEvent is true, event’s bubbles attribute is true, activationTarget
                     // is null, and parent has activation behavior, then set activationTarget to parent.
@@ -483,6 +510,8 @@ impl Event {
                 else {
                     // Step 6.9.8.1. Set target to parent.
                     target = parent.clone();
+                    // `target` changed, so its cached root node is stale; recompute it.
+                    target_root = target_root_of(&target);
 
                     // Step 6.9.8.2. If isActivationEvent is true, activationTarget is null, and target has
                     // activation behavior, then set activationTarget to target.
@@ -557,6 +586,25 @@ impl Event {
             let timeline_window = DomRoot::downcast::<Window>(target.global())
                 .filter(|window| window.need_emit_timeline_marker(TimelineMarkerType::DOMEvent));
 
+            // Precompute, for each segment, the index of the segment whose shadow-adjusted
+            // target applies to it (its own, or the nearest preceding one that is non-null).
+            // "invoke" uses this to set event.target; resolving it once here (a single forward
+            // pass) turns invoke's per-segment backward scan — which made dispatch O(path^2) —
+            // into O(path). Indices (rather than the targets themselves) keep this free of
+            // unrooted GC pointers: the targets stay reachable through the traced `self.path`.
+            let target_indices: SmallVec<[usize; EVENT_PATH_INLINE_CAPACITY]> = {
+                let path = self.path.borrow();
+                let mut current = 0;
+                let mut indices = SmallVec::with_capacity(path.len());
+                for (index, segment) in path.iter().enumerate() {
+                    if segment.shadow_adjusted_target.is_some() {
+                        current = index;
+                    }
+                    indices.push(current);
+                }
+                indices
+            };
+
             // Step 6.13. For each struct in event’s path, in reverse order:
             for (index, segment) in self.path.borrow().iter().enumerate().rev() {
                 // Step 6.13.1. If struct’s shadow-adjusted target is non-null, then set event’s
@@ -573,7 +621,7 @@ impl Event {
                 invoke(
                     cx,
                     segment,
-                    index,
+                    target_indices[index],
                     self,
                     ListenerPhase::Capturing,
                     timeline_window.as_deref(),
@@ -603,7 +651,7 @@ impl Event {
                 invoke(
                     cx,
                     segment,
-                    index,
+                    target_indices[index],
                     self,
                     ListenerPhase::Bubbling,
                     timeline_window.as_deref(),
@@ -1247,7 +1295,7 @@ impl TaskOnce for SimpleEventTask {
 fn invoke(
     cx: &mut JSContext,
     segment: &EventPathSegment,
-    segment_index_in_path: usize,
+    resolved_target_index: usize,
     event: &Event,
     phase: ListenerPhase,
     timeline_window: Option<&Window>,
@@ -1255,12 +1303,11 @@ fn invoke(
 ) {
     // Step 1. Set event’s target to the shadow-adjusted target of the last struct in event’s path,
     // that is either struct or preceding struct, whose shadow-adjusted target is non-null.
+    // NOTE: `resolved_target_index` is that struct's index, precomputed once by the caller
+    // (see `target_indices` in `dispatch_inner`) so we don't rescan the path for every segment.
     event.target.set(
-        event.path.borrow()[..segment_index_in_path + 1]
-            .iter()
-            .rev()
-            .flat_map(|segment| segment.shadow_adjusted_target.clone())
-            .next()
+        event.path.borrow()[resolved_target_index]
+            .shadow_adjusted_target
             .as_deref(),
     );
 
@@ -1404,7 +1451,9 @@ fn inner_invoke(
         //     Step 2.10.1 Report exception for listener’s callback’s corresponding JavaScript object’s
         //     associated realm’s global object.
         //     Step 2.10.2 Set legacyOutputDidListenersThrowFlag if given.
-        let marker = TimelineMarker::start("DOMEvent".to_owned());
+        // NOTE: Only build the timeline marker (a string allocation plus two clock reads
+        // per listener) when devtools is actually recording the timeline.
+        let marker = timeline_window.map(|_| TimelineMarker::start("DOMEvent".to_owned()));
         if compiled_listener
             .call_or_handle_event(cx, &event_target, event, ExceptionHandling::Report)
             .is_err() &&
@@ -1412,7 +1461,7 @@ fn inner_invoke(
         {
             flag.set(true);
         }
-        if let Some(window) = timeline_window {
+        if let Some((window, marker)) = timeline_window.zip(marker) {
             window.emit_timeline_marker(marker.end());
         }
 

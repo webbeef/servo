@@ -143,7 +143,7 @@ impl IndependentFormattingContext {
         );
 
         self.base.clear_fragments_and_dirty_fragment_cache();
-        *self.base.cached_inline_content_size.borrow_mut() = None;
+        self.base.cached_inline_content_size.borrow_mut().clear();
         self.base.repair_style(&node_and_style_info.style);
     }
 

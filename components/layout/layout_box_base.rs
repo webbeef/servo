@@ -10,6 +10,7 @@ use app_units::Au;
 use atomic_refcell::{AtomicRef, AtomicRefCell};
 use euclid::Point2D;
 use layout_api::LayoutDamage;
+use malloc_size_of::{MallocSizeOf, MallocSizeOfOps};
 use malloc_size_of_derive::MallocSizeOf;
 use servo_arc::Arc as ServoArc;
 use style::computed_values::position::T as Position;
@@ -43,13 +44,14 @@ pub(crate) struct LayoutBoxBase {
     pub base_fragment_info: BaseFragmentInfo,
     pub style: ServoArc<ComputedValues>,
     pub cached_inline_content_size:
-        AtomicRefCell<Option<Box<(SizeConstraint, InlineContentSizesResult)>>>,
+        AtomicRefCell<TwoEntryMruCache<Box<(SizeConstraint, InlineContentSizesResult)>>>,
     pub outer_inline_content_sizes_depend_on_content: AtomicBool,
 
     /// The cached layout results for this [`LayoutBoxBase`]. These are either cached
     /// independent formatting context results or a cached block layout for use within
-    /// a block flow.
-    cached_layout_result: AtomicRefCell<Option<LayoutResultAndInputs>>,
+    /// a block flow. Two entries are kept, because a box can be measured and then laid
+    /// out with different containing block sizes within a single layout pass.
+    cached_layout_result: AtomicRefCell<TwoEntryMruCache<LayoutResultAndInputs>>,
 
     /// Whether or not the cached layout result for this [`LayoutBoxBase`] is dirty.
     /// This flag is used to preserve the cache when it can be used to do a faster
@@ -101,19 +103,16 @@ impl LayoutBoxBase {
         layout_box: &impl ComputeInlineContentSizes,
     ) -> InlineContentSizesResult {
         let mut cache = self.cached_inline_content_size.borrow_mut();
-        if let Some(cached_inline_content_size) = cache.as_ref() {
-            let (previous_cb_block_size, result) = **cached_inline_content_size;
-            if !result.depends_on_block_constraints ||
-                previous_cb_block_size == constraint_space.block_size
-            {
-                return result;
-            }
-            // TODO: Should we keep multiple caches for various block sizes?
+        if let Some(cached) = cache.find(|entry| {
+            !entry.1.depends_on_block_constraints ||
+                entry.0 == constraint_space.block_size
+        }) {
+            return cached.1;
         }
 
         let result =
             layout_box.compute_inline_content_sizes_with_fixup(layout_context, constraint_space);
-        *cache = Some(Box::new((constraint_space.block_size, result)));
+        cache.insert(Box::new((constraint_space.block_size, result)));
         result
     }
 
@@ -167,7 +166,7 @@ impl LayoutBoxBase {
                 .from_children
                 .contains(LayoutDamage::RecomputeInlineContentSizes)
         {
-            *self.cached_inline_content_size.borrow_mut() = None;
+            self.cached_inline_content_size.borrow_mut().clear();
         }
 
         // When a block container has a mix of inline-level and block-level contents, the
@@ -208,26 +207,24 @@ impl LayoutBoxBase {
             return None;
         }
 
-        let cache = self.cached_layout_result.borrow();
-        let Some(LayoutResultAndInputs::IndependentFormattingContext(cache)) = &*cache else {
+        let mut cache = self.cached_layout_result.borrow_mut();
+        let Some(LayoutResultAndInputs::IndependentFormattingContext(cached)) =
+            cache.find(|entry| match entry {
+                LayoutResultAndInputs::IndependentFormattingContext(cached) => {
+                    cached.containing_block_for_children_size.inline ==
+                        containing_block_for_children.size.inline &&
+                        (!cached.result.depends_on_block_constraints ||
+                            cached.containing_block_for_children_size.block ==
+                                containing_block_for_children.size.block)
+                },
+                _ => false,
+            })
+        else {
             return None;
         };
 
-        let cache = &**cache;
-        if cache.containing_block_for_children_size.inline !=
-            containing_block_for_children.size.inline
-        {
-            return None;
-        }
-        if cache.containing_block_for_children_size.block !=
-            containing_block_for_children.size.block &&
-            cache.result.depends_on_block_constraints
-        {
-            return None;
-        }
-
-        positioning_context.append(cache.positioning_context.clone());
-        Some(cache.result.clone())
+        positioning_context.append(cached.positioning_context.clone());
+        Some(cached.result.clone())
     }
 
     pub(crate) fn cache_independent_formatting_context_layout(
@@ -238,14 +235,15 @@ impl LayoutBoxBase {
     ) {
         self.cached_layout_result_dirty
             .store(false, Ordering::Relaxed);
-        *self.cached_layout_result.borrow_mut() =
-            Some(LayoutResultAndInputs::IndependentFormattingContext(
-                Box::new(IndependentFormattingContextLayoutResultAndInputs {
+        self.cached_layout_result.borrow_mut().insert(
+            LayoutResultAndInputs::IndependentFormattingContext(Box::new(
+                IndependentFormattingContextLayoutResultAndInputs {
                     result: result.clone(),
                     positioning_context: child_positioning_context.clone(),
                     containing_block_for_children_size: containing_block_for_children.size.clone(),
-                }),
-            ));
+                },
+            )),
+        );
     }
 
     pub(crate) fn cached_same_formatting_context_block_if_applicable(
@@ -261,21 +259,23 @@ impl LayoutBoxBase {
 
         let mut cached_layout_result = self.cached_layout_result.borrow_mut();
         let Some(LayoutResultAndInputs::SameFormattingContextBlock(result)) =
-            &mut *cached_layout_result
+            cached_layout_result.find(|entry| {
+                let LayoutResultAndInputs::SameFormattingContextBlock(result) = entry else {
+                    return false;
+                };
+                result.containing_block_size == containing_block.size &&
+                    result.containing_block_writing_mode ==
+                        containing_block.style.writing_mode &&
+                    result.containing_block_justify_items ==
+                        containing_block.style.clone_justify_items().computed.0.0 &&
+                    result.collapsible_with_parent_start_margin ==
+                        collapsible_with_parent_start_margin &&
+                    result.ignore_block_margins_for_stretch == ignore_block_margins_for_stretch &&
+                    result.has_inline_parent == has_inline_parent
+            })
         else {
             return None;
         };
-
-        if result.containing_block_size != containing_block.size ||
-            result.containing_block_writing_mode != containing_block.style.writing_mode ||
-            result.containing_block_justify_items !=
-                containing_block.style.clone_justify_items().computed.0.0 ||
-            result.collapsible_with_parent_start_margin != collapsible_with_parent_start_margin ||
-            result.ignore_block_margins_for_stretch != ignore_block_margins_for_stretch ||
-            result.has_inline_parent != has_inline_parent
-        {
-            return None;
-        }
 
         let fragment = result.result.fragment.clone();
         {
@@ -309,8 +309,8 @@ impl LayoutBoxBase {
 
         self.cached_layout_result_dirty
             .store(false, Ordering::Relaxed);
-        *self.cached_layout_result.borrow_mut() =
-            Some(LayoutResultAndInputs::SameFormattingContextBlock(Box::new(
+        self.cached_layout_result.borrow_mut().insert(
+            LayoutResultAndInputs::SameFormattingContextBlock(Box::new(
                 SameFormattingContextBlockLayoutResultAndInputs {
                     result: SameFormattingContextBlockLayoutResult {
                         fragment,
@@ -328,7 +328,8 @@ impl LayoutBoxBase {
                     ignore_block_margins_for_stretch,
                     has_inline_parent,
                 },
-            )));
+            )),
+        );
     }
 
     pub(crate) fn clear_scrollable_overflow_all_on_fragments(&self) {
@@ -349,6 +350,64 @@ impl LayoutBoxBase {
 impl Debug for LayoutBoxBase {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
         f.debug_struct("LayoutBoxBase").finish()
+    }
+}
+
+/// A simple two-entry most-recently-used cache.
+/// TODO: add unit tests.
+/// TODO: move to its own file??
+pub(crate) struct TwoEntryMruCache<T> {
+    entries: [Option<T>; 2],
+
+    /// The index of the entry that was most recently inserted or matched. This entry is
+    /// checked first and is the one preserved when the other entry is replaced.
+    most_recent: usize,
+}
+
+impl<T> Default for TwoEntryMruCache<T> {
+    fn default() -> Self {
+        Self {
+            entries: [None, None],
+            most_recent: 0,
+        }
+    }
+}
+
+impl<T> TwoEntryMruCache<T> {
+    /// Find an entry matching the given predicate, checking the most recently used entry
+    /// first. A matching entry becomes the most recently used one.
+    fn find(&mut self, predicate: impl Fn(&T) -> bool) -> Option<&T> {
+        let match_index = [self.most_recent, 1 - self.most_recent]
+            .into_iter()
+            .find(|&index| {
+                self.entries[index]
+                    .as_ref()
+                    .is_some_and(|entry| predicate(entry))
+            });
+        match match_index {
+            Some(index) => {
+                self.most_recent = index;
+                self.entries[index].as_ref()
+            },
+            None => None,
+        }
+    }
+
+    /// Insert an entry, replacing the entry that was used less recently.
+    fn insert(&mut self, value: T) {
+        let slot = 1 - self.most_recent;
+        self.entries[slot] = Some(value);
+        self.most_recent = slot;
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.entries = [None, None];
+    }
+}
+
+impl<T: MallocSizeOf> MallocSizeOf for TwoEntryMruCache<T> {
+    fn size_of(&self, ops: &mut MallocSizeOfOps) -> usize {
+        self.entries.as_slice().size_of(ops)
     }
 }
 
